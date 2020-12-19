@@ -6,6 +6,10 @@
 #include <errno.h>
 #include <cstring>
 #include <netinet/tcp.h>
+#include <memory>
+#include <optional>
+#include <regex>
+#include <unordered_map>
 
 
 #define MAX_PACKET_SIZE 4096
@@ -29,7 +33,7 @@ int throw_on_err(int result)
     return result;
 }
 
-class Request
+class IncomingConnection
 {
     sockaddr m_address;
     socklen_t m_address_size;
@@ -37,23 +41,27 @@ class Request
     char msg_buffer[MAX_PACKET_SIZE];
 
     
-    Request(sockaddr address, socklen_t address_size, int request_fd):
+    IncomingConnection(sockaddr address, socklen_t address_size, int request_fd):
         m_address(address),
         m_address_size(address_size),
         m_request_fd(request_fd) {}
 
 public:
-    ~Request()
+    ~IncomingConnection()
     {
         close(m_request_fd);
     }
 
-    static Request accept_from(int socket_fd)
+    static std::shared_ptr<IncomingConnection> accept_from(int socket_fd)
     {
-        sockaddr request_address;
-        socklen_t address_size(sizeof(request_address));
-        int fd = throw_on_err(accept(socket_fd, &request_address, &address_size));
-        return Request(request_address, address_size, fd);
+        sockaddr incomming_address;
+        socklen_t address_size(sizeof(incomming_address));
+        int fd = throw_on_err(accept(socket_fd, &incomming_address, &address_size));
+
+        // TODO: find out if there is a way of using std::make_shared with a 
+        // private constructor.
+        return std::shared_ptr<IncomingConnection>(
+                new IncomingConnection(incomming_address, address_size, fd)); 
     }
 
     std::string receive()
@@ -69,10 +77,54 @@ public:
         auto return_val =  throw_on_err(send(m_request_fd, response, numBytesToSend, MSG_DONTWAIT));
         return return_val;
     }
+};
+
+struct Request
+{
+    enum Action { GET, POST };
+    const Action action;
+    const std::string path;
+    const std::shared_ptr<IncomingConnection> connection;
+
+    static Request parse_request(std::shared_ptr<IncomingConnection> connection)
+    {
+        static std::regex const header_regex("([A-Z]+) ([^ ]+).*", std::regex_constants::extended);
+        static std::unordered_map<std::string, Request::Action> const actions = { 
+            {"GET", Request::GET}, 
+            {"POST", Request::POST} 
+        };
+
+        std::smatch smatch;
+        std::string raw_request = connection->receive();
+        if(!std::regex_match(raw_request, smatch, header_regex))
+        {
+            throw std::runtime_error("bad request header: " + raw_request); 
+        }
+        auto request_action = actions.find(smatch[1]);
+        if(request_action == actions.end())
+        {
+            throw std::runtime_error(std::string("Unrecognided HTTP action "));
+        }
+        return Request{request_action->second, smatch[2], connection};
+    }
+
+    int respond(const char* response)
+    {
+        return connection->respond(response);
+    }
 
 };
 
-class TcpRequestQueue
+std::ostream& operator<<(std::ostream &strm, const Request &r) {
+    static std::unordered_map<Request::Action, const char*> const actions = { 
+            {Request::GET, "GET"}, 
+            {Request::POST, "POST"} 
+    };
+
+    return strm << actions.find(r.action)->second << " " << r.path;
+}
+
+class TcpConnectionQueue
 {
     const int m_port;
     const int m_conn_queue_size;
@@ -81,7 +133,7 @@ class TcpRequestQueue
     sockaddr_in m_server_address;
    
 public:
-    TcpRequestQueue(int port, int queue_size): 
+    TcpConnectionQueue(int port, int queue_size): 
         m_port(port), 
         m_conn_queue_size(queue_size),
         m_sock_fd(socket(AF_INET, SOCK_STREAM, 0))
@@ -102,9 +154,9 @@ public:
 
     }
 
-    Request next_request()
+    std::shared_ptr<IncomingConnection> next_connection()
     {
-        return Request::accept_from(m_sock_fd); 
+        return IncomingConnection::accept_from(m_sock_fd); 
     }
     
 };
@@ -117,12 +169,20 @@ int main(int argc, char **argv)
     if(argc > 1) port = atoi(argv[1]);
     if(argc > 2) queue_size = atoi(argv[2]);
 
-    TcpRequestQueue conns(port, queue_size);
+    TcpConnectionQueue conns(port, queue_size);
 
     while(true)
-    {    
-        auto r = conns.next_request();
-        std::cout << r.receive() << std::endl;
-        r.respond(RESPONSE);
+    {   
+        auto connection =  conns.next_connection();
+        try
+        {
+            auto r = Request::parse_request(connection);
+            std::cout << r << std::endl;
+            r.respond(RESPONSE);
+        } catch (const std::runtime_error& e)
+        {
+            std::cerr << e.what() << std::endl;
+            connection->respond("HTTP/1.1 500 ERROR\r\n\r\nSomething went wrong"); 
+        }
     }
 }
