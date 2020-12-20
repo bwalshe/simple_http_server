@@ -1,24 +1,12 @@
-#include <sys/socket.h>
-#include <unistd.h>
-#include <netinet/in.h>
-#include <stdexcept>
 #include <iostream>
-#include <errno.h>
-#include <cstring>
-#include <netinet/tcp.h>
-#include <memory>
-#include <optional>
-#include <regex>
-#include <unordered_map>
 #include <future>
 #include "connection.h"
 #include "request.h"
-#include "connection_queue.h"
-
+#include "response.h"
 
 constexpr int MAX_PACKET_SIZEi = 4096;
 
-const char* RESPONSE = "HTTP/1.1 200 OK\r\n\r\n"
+const char* RESPONSE = 
 R"(
 <html>
     <head>
@@ -30,36 +18,42 @@ R"(
 </html>
 )";
 
-const char* ERROR =  "HTTP/1.1 500 ERROR\r\n\r\nSomething went wrong";
+const char* ERROR =  "Something went wrong";
 
-void process_request(std::shared_ptr<IncomingConnection> connection)
+void process_request(TcpConnectionQueue::connection_ptr connection)
 {   
     try
     {
         auto r = parse_request(connection);
         std::cout << r << std::endl;
-        r.respond(RESPONSE);
-    } catch (const std::runtime_error& e)
+        r.respond(OK(RESPONSE));
+    }
+    catch (const std::runtime_error& e)
     {
         std::cerr << e.what() << std::endl;
-        connection->respond(ERROR); 
+        connection->respond(ServerError(ERROR)); 
     }
-
 }
 
 
 int main(int argc, char **argv)
 {
     int port = 8080;
+    int timeout = 5000;
     int queue_size = 5;
 
     if(argc > 1) port = atoi(argv[1]);
-    if(argc > 2) queue_size = atoi(argv[2]);
+    if(argc > 2) timeout = atoi(argv[2]);
+    if(argc > 3) queue_size = atoi(argv[3]);
 
     TcpConnectionQueue conns(port, queue_size);
 
-    while(true)
-    {   
-        process_request(conns.next_connection());
+    while(conns.is_alive())
+    {  
+       std::cerr << "Watitng for a connection." << std::endl;
+       for(TcpConnectionQueue::connection_ptr connection: conns.waiting_connections(timeout))
+       {    
+           static_cast<void>(std::async(&process_request, connection));
+       }
     }
 }

@@ -25,7 +25,7 @@ std::ostream& operator<<(std::ostream &strm, const Request &r) {
 }
 
 
-Request parse_request(std::shared_ptr<IncomingConnection> connection)
+Request parse_request(std::shared_ptr<TcpConnectionQueue::IncomingConnection> connection)
 {
     static std::regex const header_regex("([A-Z]+) ([^ ]+).*", 
             std::regex_constants::extended);
