@@ -1,7 +1,7 @@
 #pragma once
 #include <sstream>
 #include <string>
-
+#include <iostream>
 //
 // HTTP response including a header and body
 //
@@ -15,10 +15,10 @@ class Response
     
 public:
     Response(const std::string &header, const std::string &body):
-        m_header(header), m_body(body)
-    {}
+        m_header(header), m_body(body) {}
 
-    virtual ~Response(){}
+    virtual ~Response(){
+    }
 
     operator std::string()
     {

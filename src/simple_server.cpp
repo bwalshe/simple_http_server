@@ -130,8 +130,8 @@ void process_request(std::vector<RequestHandler*> *handlers, TcpConnectionQueue:
 int main(int argc, char **argv)
 {
     int port = 8080;
-    int timeout = 5000;
-    int queue_size = 5;
+    int timeout = 30000;
+    int queue_size = 10;
 
     if(argc > 1) port = atoi(argv[1]);
     if(argc > 2) timeout = atoi(argv[2]);
@@ -146,7 +146,7 @@ int main(int argc, char **argv)
 
     while(conns.is_alive())
     {  
-       std::cerr << "Watitng for a connection." << std::endl;
+       std::cerr << "Waiting for a connection." << std::endl;
        for(TcpConnectionQueue::connection_ptr connection: conns.waiting_connections(timeout))
        {    
            std::thread t(&process_request, &handlers, connection);

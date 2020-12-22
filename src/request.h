@@ -43,9 +43,9 @@ public:
     //
     // Send a response to this request. The response will be consumed and cannot be used again.
     //
-    int respond(Response &&response)
+    void respond(Response &&response)
     {
-        return m_connection->respond(std::move(response));
+        m_connection->respond(std::move(response));
     }
     
     friend std::ostream& operator<<(std::ostream &, const Request &);

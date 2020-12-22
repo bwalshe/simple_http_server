@@ -6,6 +6,8 @@
 #include <netinet/tcp.h>
 #include <memory>
 #include <vector>
+#include <map>
+#include <mutex>
 #include <sys/epoll.h>
 #include "util.h"
 #include "response.h"
@@ -58,20 +60,15 @@ public:
     //
     class IncomingConnection
     {
-        sockaddr m_address;
-        socklen_t m_address_size;
         int m_request_fd;
-        char msg_buffer[MAX_PACKET_SIZE];
+        TcpConnectionQueue *m_queue;
 
-        IncomingConnection(sockaddr address, socklen_t address_size, int request_fd):
-            m_address(address),
-            m_address_size(address_size),
-            m_request_fd(request_fd) {}
+        IncomingConnection(int request_fd, TcpConnectionQueue *queue):
+            m_request_fd(request_fd), m_queue(queue) {}
 
     public:
         ~IncomingConnection()
         {
-            close(m_request_fd);
         }
 
         //
@@ -84,10 +81,12 @@ public:
         //
         // Note the response object passed to this method is consumed and cannot be used again.
         //
-        int respond(Response &&response);
+        void respond(Response &&response);
 
         friend std::vector<connection_ptr> TcpConnectionQueue::waiting_connections(int timeout_ms);
     };
+
+    friend void IncomingConnection::respond(Response &&);
 
 private:
     const int m_port;
@@ -99,6 +98,8 @@ private:
     mutable bool m_alive;
     int m_max_batch_size;
     epoll_event *m_epoll_buffer;
+    std::mutex m_response_mtx;
+    std::map<int, Response> m_pending_responses;
      
 };
 
