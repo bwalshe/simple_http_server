@@ -7,8 +7,8 @@
 #include <memory>
 #include <vector>
 #include <map>
-#include <mutex>
 #include <sys/epoll.h>
+#include <tbb/concurrent_hash_map.h>
 #include "util.h"
 #include "response.h"
 
@@ -89,6 +89,8 @@ public:
     friend void IncomingConnection::respond(Response &&);
 
 private:
+    using ResponseTable = tbb::concurrent_hash_map<int, std::shared_ptr<Response>>; 
+
     const int m_port;
     const int m_conn_queue_size;
     const int m_sock_fd;
@@ -98,8 +100,7 @@ private:
     mutable bool m_alive;
     int m_max_batch_size;
     epoll_event *m_epoll_buffer;
-    std::mutex m_response_mtx;
-    std::map<int, Response> m_pending_responses;
+    ResponseTable m_pending_responses;
      
 };
 

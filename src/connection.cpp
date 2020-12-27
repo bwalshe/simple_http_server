@@ -117,17 +117,19 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
         {
             throw_on_err(epoll_delete(m_epoll_fd, event_fd), 
                     "Remove outgoing connection from epoll");
-            std::lock_guard<std::mutex> guard(m_response_mtx);
-            Response response = m_pending_responses.find(event_fd)->second;
-            size_t removed = m_pending_responses.erase(event_fd);
-            if(removed != 1)
+            ResponseTable::accessor accessor;
+
+            bool found = m_pending_responses.find(accessor, event_fd);
+            if(!found)
             {
                 std::ostringstream out;
                 out << "Attemped to serve an outgoing socket, but there were "
-                    << removed << " responses available." << std::endl;
+                    << "no responses available." << std::endl;
                 throw std::runtime_error(out.str());
             }
-            auto response_str = static_cast<std::string>(response);
+            auto response_str = static_cast<std::string>(*(accessor->second));
+            m_pending_responses.erase(accessor);
+            accessor.release();
             int numBytesToSend = response_str.size();
             throw_on_err(send(event_fd, response_str.c_str(), numBytesToSend, 0), "send");
             throw_on_err(close(event_fd), "Close connection");
@@ -149,9 +151,10 @@ std::string TcpConnectionQueue::IncomingConnection::receive()
 void TcpConnectionQueue::IncomingConnection::respond(Response &&response)
 {
     {
-        std::lock_guard<std::mutex> guard(m_queue->m_response_mtx);
-        m_queue->m_pending_responses.insert(
-                std::pair<int, Response>(m_request_fd, std::move(response)));
+        ResponseTable::accessor accessor;
+        if(m_queue->m_pending_responses.insert(accessor, m_request_fd)) {
+            accessor->second = std::make_shared<Response>(std::move(response));
+        }
     }
 
     epoll_event ev;
