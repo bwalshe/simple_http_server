@@ -1,6 +1,5 @@
-#include <mutex>
 #include <netinet/tcp.h>
-#include <iostream> 
+#include <iostream>
 #include <cstring>
 #include <sstream>
 #include <sys/epoll.h>
@@ -25,7 +24,7 @@ int epoll_watch(int epoll_fd, int event_fd, int event_type)
     memset(&ev, 0, sizeof(ev));
     ev.events = event_type;
     ev.data.fd = event_fd;
-    return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &ev); 
+    return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, event_fd, &ev);
 }
 
 
@@ -43,8 +42,8 @@ int setnonblocking(int fd)
     return fcntl(fd, F_SETFL, O_NONBLOCK);
 }
 
-TcpConnectionQueue::TcpConnectionQueue(int port, int queue_size, int max_batch_size): 
-    m_port(port), 
+TcpConnectionQueue::TcpConnectionQueue(int port, int queue_size, int max_batch_size):
+    m_port(port),
     m_conn_queue_size(queue_size),
     m_sock_fd(socket(AF_INET, SOCK_STREAM, 0)),
     m_alive(true),
@@ -59,10 +58,10 @@ TcpConnectionQueue::TcpConnectionQueue(int port, int queue_size, int max_batch_s
     m_server_address.sin_family = AF_INET;
     m_server_address.sin_addr.s_addr = htonl(INADDR_ANY);
     m_server_address.sin_port = htons(port);
-    throw_on_err(bind(m_sock_fd, (sockaddr *)&m_server_address, 
+    throw_on_err(bind(m_sock_fd, (sockaddr *)&m_server_address,
                 sizeof(m_server_address)), "bind(m_sock_fd)");
     throw_on_err(listen(m_sock_fd, m_conn_queue_size), "listen(socker_fd)");
-    
+
     m_epoll_fd = throw_on_err(epoll_create1(0), "epoll_create");
     throw_on_err(epoll_watch(m_epoll_fd, m_sock_fd, EPOLLIN), "set up sock poll");
 
@@ -78,19 +77,19 @@ TcpConnectionQueue::TcpConnectionQueue(int port, int queue_size, int max_batch_s
 std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_connections(int timeout_ms)
 {
     std::vector<TcpConnectionQueue::connection_ptr> connections;
-   
+
     sockaddr_in incoming_address;
     socklen_t address_size(sizeof(incoming_address));
 
     int nfds = throw_on_err(
-            epoll_wait(m_epoll_fd, m_epoll_buffer, m_max_batch_size, timeout_ms), 
+            epoll_wait(m_epoll_fd, m_epoll_buffer, m_max_batch_size, timeout_ms),
             "epoll_wait");
     for(auto i = 0; i < nfds; ++i)
     {
         int event_type = m_epoll_buffer[i].events;
         int event_fd = m_epoll_buffer[i].data.fd;
 
-        if(event_fd == m_sig_fd) 
+        if(event_fd == m_sig_fd)
         {
             std::cerr << "Shutting down." << std::endl;
             m_alive = false;
@@ -99,11 +98,11 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
         if (event_fd == m_sock_fd)
         {
             int connection_fd = throw_on_err(
-                    accept(m_sock_fd, (sockaddr *) &incoming_address, &address_size), 
+                    accept(m_sock_fd, (sockaddr *) &incoming_address, &address_size),
                     "accept(m_soc_fd)");
-            throw_on_err(setnonblocking(connection_fd), 
+            throw_on_err(setnonblocking(connection_fd),
                     "make incoming connection non-blocking");
-            throw_on_err(epoll_watch(m_epoll_fd, connection_fd, EPOLLIN), 
+            throw_on_err(epoll_watch(m_epoll_fd, connection_fd, EPOLLIN),
                     "Add incoming connection to epoll");
         }
         else if(event_type & EPOLLIN)
@@ -115,7 +114,7 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
         }
         else if(event_type & EPOLLOUT)
         {
-            throw_on_err(epoll_delete(m_epoll_fd, event_fd), 
+            throw_on_err(epoll_delete(m_epoll_fd, event_fd),
                     "Remove outgoing connection from epoll");
             ResponseTable::accessor accessor;
 
@@ -135,7 +134,7 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
             throw_on_err(close(event_fd), "Close connection");
         }
     }
-    return connections; 
+    return connections;
 }
 
 
@@ -154,6 +153,10 @@ void TcpConnectionQueue::IncomingConnection::respond(Response &&response)
         ResponseTable::accessor accessor;
         if(m_queue->m_pending_responses.insert(accessor, m_request_fd)) {
             accessor->second = std::make_shared<Response>(std::move(response));
+        } 
+        else
+        {
+            throw std::runtime_error("Could not add response to outgoing queue");
         }
     }
 

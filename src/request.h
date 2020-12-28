@@ -23,8 +23,10 @@ private:
     Request(TcpConnectionQueue::connection_ptr connection, Action action, std::string path, std::string query) : 
         m_action(action), m_path(path), m_query(query), m_connection(connection) {}
 
+    Request & operator=(const Request &) = delete;
+
 public:
-    
+
     Action get_action() const 
     {
         return m_action;
@@ -50,7 +52,6 @@ public:
     
     friend std::ostream& operator<<(std::ostream &, const Request &);
     friend std::optional<Request> parse_request(std::shared_ptr<TcpConnectionQueue::IncomingConnection>);
-
 private:
     
     static Action get_action(const std::string &action);

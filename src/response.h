@@ -2,6 +2,10 @@
 #include <sstream>
 #include <string>
 #include <iostream>
+
+#define SEP "\r\n\r\n"
+
+
 //
 // HTTP response including a header and body
 //
@@ -10,19 +14,18 @@
 //
 class Response
 {
-    std::string m_header;
-    std::string m_body;
-    
+    const std::string m_data;
+
 public:
     Response(const std::string &header, const std::string &body):
-        m_header(header), m_body(body) {}
+        m_data(header + SEP + body) {}
 
     virtual ~Response(){
     }
 
     operator std::string()
     {
-        return m_header + "\r\n\r\n" + m_body;
+        return m_data;
     }
 };
 
@@ -32,14 +35,14 @@ public:
 //
 class OK: public Response
 {
-   
+
  public:
     OK(const std::string &body): Response("HTTP/1.1 200 OK", body){}
 };
 
 
 //
-// 404 Not found 
+// 404 Not found
 //
 class NotFound: public Response
 {
