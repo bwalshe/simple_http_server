@@ -8,7 +8,7 @@
 #include <vector>
 #include <map>
 #include <sys/epoll.h>
-#include <tbb/concurrent_hash_map.h>
+#include <oneapi/tbb/concurrent_hash_map.h>
 #include "util.h"
 #include "response.h"
 
@@ -79,7 +79,7 @@ public:
         //
         // Send a response back to the connection.
         //
-        // Note the response object passed to this method is consumed and cannot be used again.
+        // Note the response object passed to this method is cannot be used again.
         //
         void respond(Response &&response);
 
@@ -89,7 +89,7 @@ public:
     friend void IncomingConnection::respond(Response &&);
 
 private:
-    using ResponseTable = tbb::concurrent_hash_map<int, std::shared_ptr<Response>>; 
+    using ResponseTable = oneapi::tbb::concurrent_hash_map<int, std::shared_ptr<Response>>; 
 
     const int m_port;
     const int m_conn_queue_size;
@@ -103,5 +103,4 @@ private:
     ResponseTable m_pending_responses;
      
 };
-
 

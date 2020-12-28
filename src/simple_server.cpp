@@ -1,10 +1,8 @@
 #include <iostream>
-#include <future>
-#include <oneapi/tbb/task_arena.h>
 #include "connection.h"
 #include "request.h"
 #include "response.h"
-
+#include "connection_processor.h"
 
 const char* HELLO_RESPONSE =
 R"(
@@ -45,14 +43,6 @@ R"(
 const char* ERROR =  "Something went wrong";
 
 
-class RequestHandler
-{
-public:
-    virtual bool matches(const Request &request) = 0;
-    virtual void process(Request &&request) = 0;
-    virtual ~RequestHandler(){}
-};
-
 
 class HelloWorldRequestHandler : public RequestHandler
 {
@@ -85,57 +75,6 @@ public:
 };
 
 
-class NotFoundRequestHandler : public RequestHandler
-{
-public:
-    bool matches([[maybe_unused]] const Request &request)
-    {
-        return true;
-    }
-
-    void process(Request &&request)
-    {
-        request.respond(NotFound(MISSING_RESPONSE));
-    }
-};
-
-class ConnectionProcessor
-{
-    oneapi::tbb::task_arena m_arena;
-    std::vector<RequestHandler*> m_handlers;
-
-public:
-    ConnectionProcessor(int threads, std::vector<RequestHandler*> &&handlers):
-        m_arena(threads),
-        m_handlers(std::move(handlers)) {
-        }
-
-    void process(TcpConnectionQueue::connection_ptr connection)
-    {
-        try
-        {
-            auto r = parse_request(connection);
-            if(r.has_value())
-            {
-                for(auto handler: m_handlers)
-                {
-                    if(handler->matches(r.value()))
-                    {
-                        std::shared_ptr<Request> request(std::make_shared<Request>(std::move(r.value())));
-                        m_arena.enqueue([=]{handler->process(std::move(*request));});
-                        break;
-                    }
-                }
-            }
-        }
-        catch (const std::runtime_error& e)
-        {
-            std::cerr << e.what() << std::endl;
-            connection->respond(ServerError(ERROR));
-        }
-    }
-};
-
 int main(int argc, char **argv)
 {
     int port = 8080;
@@ -147,16 +86,14 @@ int main(int argc, char **argv)
     if(argc > 3) queue_size = atoi(argv[3]);
 
 
-    NotFoundRequestHandler not_Found_handler;
-    HelloWorldRequestHandler hello_handler;
-    SlowRequestHandler slow_handler;
     TcpConnectionQueue conns(port, queue_size, queue_size);
-    ConnectionProcessor processor(10,
-        std::vector<RequestHandler*> {
-            &hello_handler,
-            &slow_handler,
-            &not_Found_handler
-        });
+    ConnectionProcessor processor = ConnectionProcessor::builder()
+        .with_threads(10)
+        ->with_request_handler(new HelloWorldRequestHandler())
+        ->with_request_handler(new SlowRequestHandler()) 
+        ->with_not_found_response([]([[maybe_unused]] Request &r){return NotFound(MISSING_RESPONSE);})
+        ->with_error_response([]{return ServerError(ERROR);})
+        ->build();
 
     while(conns.is_alive())
     {
