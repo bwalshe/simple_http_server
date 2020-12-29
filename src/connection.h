@@ -6,9 +6,10 @@
 #include <netinet/tcp.h>
 #include <memory>
 #include <vector>
-#include <map>
+#include <future>
 #include <sys/epoll.h>
 #include <oneapi/tbb/concurrent_hash_map.h>
+#include <oneapi/tbb/task_arena.h>
 #include "util.h"
 #include "response.h"
 
@@ -72,7 +73,7 @@ public:
         }
 
         //
-        // Try to reead a string from the connection.
+        // Try to read a string from the connection.
         //
         std::string receive();
        
@@ -81,15 +82,16 @@ public:
         //
         // Note the response object passed to this method is cannot be used again.
         //
-        void respond(Response &&response);
+        void respond(std::function<std::shared_ptr<Response>(void)> &&);
+
 
         friend std::vector<connection_ptr> TcpConnectionQueue::waiting_connections(int timeout_ms);
     };
 
-    friend void IncomingConnection::respond(Response &&);
+    friend void IncomingConnection::respond(std::function<std::shared_ptr<Response>(void)> &&);
 
 private:
-    using ResponseTable = oneapi::tbb::concurrent_hash_map<int, std::shared_ptr<Response>>; 
+    using ResponseTable = oneapi::tbb::concurrent_hash_map<int, std::future<std::shared_ptr<Response>>>; 
 
     const int m_port;
     const int m_conn_queue_size;
@@ -101,6 +103,7 @@ private:
     int m_max_batch_size;
     epoll_event *m_epoll_buffer;
     ResponseTable m_pending_responses;
+    oneapi::tbb::task_arena m_response_threads;
      
 };
 

@@ -10,12 +10,13 @@ class RequestHandler
 {
 public:
     virtual bool matches(const Request &request) = 0;
-    virtual void process(Request &&request) = 0;
+    virtual std::shared_ptr<Response> process(const Request &request) = 0;
     virtual ~RequestHandler(){}
 };
 
-class ConnectionProcessor
+class RequestProcessor
 {
+    using response_ptr = std::shared_ptr<Response>;
 public:
     class Builder
     {
@@ -23,8 +24,8 @@ public:
         bool missing_set = false;
         int m_num_threads;
         std::vector<std::shared_ptr<RequestHandler>> m_handlers;
-        std::function<Response(void)> m_error_response;
-        std::function<Response(Request&)> m_not_found_response;
+        std::function<ServerError(void)> m_error_response;
+        std::function<NotFound(const Request&)> m_not_found_response;
 
         public:
 
@@ -34,14 +35,14 @@ public:
             return this;
         }
 
-        Builder *with_not_found_response(std::function<Response(Request&)> &&f)
+        Builder *with_not_found_response(std::function<NotFound(const Request&)> &&f)
         {
             missing_set = true;
             m_not_found_response = f;
             return this;
         }
 
-        Builder *with_error_response(std::function<Response()> &&f)
+        Builder *with_error_response(std::function<ServerError(void)> &&f)
         {
             error_set = true;
             m_error_response = f;
@@ -54,7 +55,7 @@ public:
             return this;
         }
 
-        ConnectionProcessor build()
+        RequestProcessor build()
         {
             if(!error_set)
             {
@@ -64,7 +65,7 @@ public:
             {
                 throw std::runtime_error("No missing page response set");
             }
-            return ConnectionProcessor(m_num_threads, std::move(m_handlers), std::move(m_not_found_response), 
+            return RequestProcessor(m_num_threads, std::move(m_handlers), std::move(m_not_found_response), 
                     std::move(m_error_response));
         }
 
@@ -72,19 +73,29 @@ public:
    
     oneapi::tbb::task_arena m_arena;
     std::vector<std::shared_ptr<RequestHandler>> m_handlers;
-    std::function<Response(Request&)> m_not_found_response;
-    std::function<Response(void)> m_error_response;
+    std::function<NotFound(const Request&)> m_not_found_response;
+    std::function<ServerError(void)> m_error_response;
 
 public:
-    ConnectionProcessor(int threads, std::vector<std::shared_ptr<RequestHandler>> &&handlers, 
-            std::function<Response(Request&)> &&not_found_response, 
-            std::function<Response(void)> &&error_response):
+    RequestProcessor(int threads, std::vector<std::shared_ptr<RequestHandler>> &&handlers, 
+            std::function<NotFound(const Request&)> &&not_found_response, 
+            std::function<ServerError(void)> &&error_response):
         m_arena(threads),
         m_handlers(std::move(handlers)),
         m_not_found_response(not_found_response),
         m_error_response(error_response){}
 
-    void process(TcpConnectionQueue::connection_ptr connection);
+    response_ptr process(const Request&);
+
+    void respond(std::shared_ptr<TcpConnectionQueue::IncomingConnection> connection)
+    {
+        auto request = parse_request(connection);
+        if(request.has_value())
+        {
+            connection->respond([=]{return process(request.value());});
+        }
+    }
+
 
     static Builder builder()
     { 

@@ -42,13 +42,6 @@ public:
         return m_query;
     }   
     
-    //
-    // Send a response to this request. The response will be consumed and cannot be used again.
-    //
-    void respond(Response &&response)
-    {
-        m_connection->respond(std::move(response));
-    }
     
     friend std::ostream& operator<<(std::ostream &, const Request &);
     friend std::optional<Request> parse_request(std::shared_ptr<TcpConnectionQueue::IncomingConnection>);

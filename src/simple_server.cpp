@@ -2,7 +2,7 @@
 #include "connection.h"
 #include "request.h"
 #include "response.h"
-#include "connection_processor.h"
+#include "request_processor.h"
 
 const char* HELLO_RESPONSE =
 R"(
@@ -52,9 +52,9 @@ public:
         return request.get_action() == Request::GET && request.get_path() == "/hello";
     }
 
-    void process(Request &&request)
+    std::shared_ptr<Response> process([[maybe_unused]] const Request &request)
     {
-        request.respond(OK(HELLO_RESPONSE));
+        return std::make_shared<OK>(HELLO_RESPONSE);
     }
 };
 
@@ -67,10 +67,10 @@ public:
         return request.get_action() == Request::GET && request.get_path() == "/slow";
     }
 
-    void process(Request &&request)
+    std::shared_ptr<Response> process([[maybe_unused]] const Request &request)
     {
         std::this_thread::sleep_for (std::chrono::seconds(30));
-        request.respond(OK(SLOW_RESPONSE));
+        return std::make_shared<OK>(SLOW_RESPONSE);
     }
 };
 
@@ -87,11 +87,10 @@ int main(int argc, char **argv)
 
 
     TcpConnectionQueue conns(port, queue_size, queue_size);
-    ConnectionProcessor processor = ConnectionProcessor::builder()
-        .with_threads(10)
-        ->with_request_handler(new HelloWorldRequestHandler())
+    RequestProcessor processor = RequestProcessor::builder()
+        .with_request_handler(new HelloWorldRequestHandler())
         ->with_request_handler(new SlowRequestHandler()) 
-        ->with_not_found_response([]([[maybe_unused]] Request &r){return NotFound(MISSING_RESPONSE);})
+        ->with_not_found_response([]([[maybe_unused]] const Request &r){return NotFound(MISSING_RESPONSE);})
         ->with_error_response([]{return ServerError(ERROR);})
         ->build();
 
@@ -100,7 +99,7 @@ int main(int argc, char **argv)
        std::cerr << "Waiting for a connection." << std::endl;
        for(TcpConnectionQueue::connection_ptr connection: conns.waiting_connections(timeout))
        {
-           processor.process(connection);
+           processor.respond(connection);
        }
     }
 
