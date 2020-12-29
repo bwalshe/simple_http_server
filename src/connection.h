@@ -9,7 +9,6 @@
 #include <future>
 #include <sys/epoll.h>
 #include <oneapi/tbb/concurrent_hash_map.h>
-#include <oneapi/tbb/task_arena.h>
 #include "util.h"
 #include "response.h"
 
@@ -103,7 +102,5 @@ private:
     int m_max_batch_size;
     epoll_event *m_epoll_buffer;
     ResponseTable m_pending_responses;
-    oneapi::tbb::task_arena m_response_threads;
-     
 };
 

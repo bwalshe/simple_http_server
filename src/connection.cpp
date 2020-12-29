@@ -52,8 +52,7 @@ TcpConnectionQueue::TcpConnectionQueue(int port, int queue_size, int max_batch_s
     m_conn_queue_size(queue_size),
     m_sock_fd(socket(AF_INET, SOCK_STREAM, 0)),
     m_alive(true),
-    m_max_batch_size(max_batch_size),
-    m_response_threads(10)
+    m_max_batch_size(max_batch_size)
 {
     throw_on_err(m_sock_fd, "socket(AF_INET, SOCK_STREAM, 0)");
     throw_on_err(setnonblocking(m_sock_fd), "make socket non-blocking");
@@ -144,11 +143,10 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
         }
         else if(event_type & EPOLLRDHUP)
         {
-            std::cerr << "got EPOLLHUP on " << event_fd << std::endl;
             ResponseTable::accessor accessor;
             if(m_pending_responses.find(accessor, event_fd))
             {
-                std::cerr << "Deleting unset response as client connection has been closed." << std::endl;
+                std::cerr << "Deleting unsent response as client connection has been closed." << std::endl;
                 m_pending_responses.erase(accessor);
             }
             throw_on_err(epoll_delete(m_epoll_fd, event_fd), "removing closed connection from epoll");
@@ -170,28 +168,22 @@ std::string TcpConnectionQueue::IncomingConnection::receive()
 
 void TcpConnectionQueue::IncomingConnection::respond(std::function<std::shared_ptr<Response>(void)> &&response)
 {
-    using response_task = std::packaged_task<std::shared_ptr<Response>(void)>; 
-    response_task task([=](){
-            auto r = response();
-            throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLOUT, true),
-                "Add outgoing response to epoll");
-            return r;
-    });
-    
+    throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLRDHUP),
+            "Add outgoing response to epoll");
     {
         ResponseTable::accessor accessor;
         if(m_queue->m_pending_responses.insert(accessor, m_request_fd)) {
-            accessor->second = task.get_future();
+            accessor->second = std::async([=](){
+                auto r = response();
+                throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLOUT, true),
+                    "Add outgoing response to epoll");
+                return r;
+            });
         } 
         else
         {
             throw std::runtime_error("Could not add response to outgoing queue");
         }
     }
-  
-    throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLRDHUP),
-            "Add outgoing response to epoll");
-    m_queue->m_response_threads.execute(std::move(task));
-
 }
 
