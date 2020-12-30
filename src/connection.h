@@ -11,8 +11,7 @@
 #include <oneapi/tbb/concurrent_hash_map.h>
 #include "util.h"
 #include "response.h"
-
-
+#include "thread_pool.h"
 #define MAX_PACKET_SIZE 4096
 
 
@@ -102,5 +101,6 @@ private:
     int m_max_batch_size;
     epoll_event *m_epoll_buffer;
     ResponseTable m_pending_responses;
+    ThreadPool<100, std::shared_ptr<Response>> m_thread_pool;
 };
 

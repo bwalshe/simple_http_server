@@ -98,6 +98,7 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::waiting_conn
         {
             std::cerr << "Shutting down." << std::endl;
             m_alive = false;
+            m_thread_pool.shutdown();
             break;
         }
         if (event_fd == m_sock_fd)
@@ -173,7 +174,7 @@ void TcpConnectionQueue::IncomingConnection::respond(std::function<std::shared_p
     {
         ResponseTable::accessor accessor;
         if(m_queue->m_pending_responses.insert(accessor, m_request_fd)) {
-            accessor->second = std::async([=](){
+            accessor->second = m_queue->m_thread_pool.submit([=](){
                 auto r = response();
                 throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLOUT, true),
                     "Add outgoing response to epoll");
