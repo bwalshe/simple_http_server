@@ -4,15 +4,17 @@ project(SimpleServer)
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(SOURCES src/util.cpp 
+set(SOURCES src/util.cpp
     src/connection.cpp
-    src/request.cpp 
+    src/request.cpp
     src/request_processor.cpp
     src/simple_server.cpp)
 
-set(TESTS test/test_main.cpp 
+set(TESTS test/test_main.cpp
     test/test_queue.cpp
-    test/test_threadpool.cpp)
+    test/test_threadpool.cpp
+    src/util.cpp)
+
 
 include_directories(src)
 add_executable(http_server ${SOURCES})
@@ -22,4 +24,4 @@ target_link_libraries(http_server PRIVATE TBB::tbb pthread)
 
 find_package(Catch2 REQUIRED)
 add_executable(test ${TESTS})
-target_link_libraries(test PRIVATE Catch2::Catch2 pthread)
+target_link_libraries(test PRIVATE pthread Catch2::Catch2)

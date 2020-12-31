@@ -96,8 +96,7 @@ int main(int argc, char **argv)
 
     while(conns.is_alive())
     {
-       std::cerr << "Waiting for a connection." << std::endl;
-       for(TcpConnectionQueue::connection_ptr connection: conns.waiting_connections(timeout))
+       for(TcpConnectionQueue::connection_ptr connection: conns.handle_connections(timeout))
        {
            processor.respond(connection);
        }
