@@ -1,20 +1,43 @@
-# A basic HTTP server
+# A Simple(ish) HTTP Server with Asynchronous IO 
 
-This is a basic HTTP server I put together to help understand networking and 
-concurrency a bit better. I was reading *C++ Concurrency in Action* by Anthony 
-Williams, which contains a skeleton example of using promises and futures to 
-make a non-blocking web server, but it pretty damn skeletal. 
+I work in a company that provides a real-time, machine learning, fraud
+detection product. The phrase *real-time* gets thrown around a lot these
+days, and I have heard it used to describe systems that produce results 
+within a second or two. For us though, it has quite a specific definition -
+*real-time* means that clients will connect to our system, send a request, 
+and expect a response back on the same connection within X milliseconds. If 
+it takes any longer, then we will probably be in breach of some SLA and could
+face some kind of financial penalty.
 
-Non-blocking web servers are a pretty interesting subject and I have used them
-in the past for work projects, but I've kind of considered what is going on 
-under the hood to be a kind of voodoo. I realised I was jumping the gun a bit
-trying to understand non-blocking servers when I wasn't clear on how regular
-servers are implemented, so that is why I started putting this project together.
+<img align="right" src="docs/covid_homer.jpg" alt="Christmas 2020"/>
 
-This is a one-thread-per-request web server implemented using linux API calls
-and the standard C++ library. A fairly simple improvement would be to get it
-to use a thread pool instead of spawning new threads each request, but I think
-it might take a bit of reworking to get the non-blocking behaviour shown in
-William's example. I also should get it to stream requests and results instead
-of passing strings around.
+As a machine learning engineer, I don't have to deal with this problem. I 
+mostly work on offline tools used by our data scientists to build and test
+their models. This means that I care a lot more about improving overall
+throughput instead of latency. Real time was a subject that was interesting,
+but I just didn't have the time to look into it properly. 
+
+That was until Christmas 2020 - I went home to see my family and two days later
+I got a text message from the Irish Government saying that I had to remain in 
+my room for the next two weeks. I couldn't find anything good on Netflix, so
+I decided to crack open my dusty copy of 
+[C++ Concurrency in Action](https://www.manning.com/books/c-plus-plus-concurrency-in-action-second-edition)
+and try to get to grip with this real time stuff.
+
+The result was the HTTP server contained in the repo. On their own, HTTP 
+servers are not strictly Real Time Systems, as there is no hard limit on their
+response time. In practice though, it's usually pretty important that they 
+respond to many concurrent connections with as low a latency as possible, and
+they can be used as a *component* in a real time system. The tactic I have
+gone with to reduce the latency is to use non-blocking IO, and the bulk of 
+the rest of this article will be spend explaining how and why this is done.
+
+Before we go on, I should re-iterate that I do not work on real-time stuff
+professionally. I am not suggesting that this is the best way of solving the
+problem, and you should not use this as a reference on how to use non-blocking 
+IO. On top of this I have had no involvement in the development of the real-time 
+component of Featurespace's product, I have never even looked at that part of 
+our codebase and this repo is probably not representative of how our product
+works. This code has not been through a review, I rarely use C++, and it is the
+first time I have written a threaded C++ program - so *cavet emptor*.
 
