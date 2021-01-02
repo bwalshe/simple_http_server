@@ -3,7 +3,7 @@
 I work in a company that provides a real-time, machine learning, fraud
 detection product. The phrase *real-time* gets thrown around a lot these
 days, and I have heard it used to describe systems that produce results 
-within a second or two. For us though, it has quite a specific definition -
+within a second or two. For us though, it has a very specific definition -
 *real-time* means that clients will connect to our system, send a request, 
 and expect a response back on the same connection within X milliseconds. If 
 it takes any longer, then we will probably be in breach of some SLA and could
@@ -53,29 +53,39 @@ It's pretty simple. I made a diagram, but it's hardly needed.
 
 ![Simple HTTP loop](docs/simple_http_loop.svg)
 
-If you wanted to implement this all you'd need is something like the following:
+If you wanted to implement this, you'd need is something like the following:
 
 ```c
-char in_buffer[BUFFER_SIZE]; // A buffer for the incoming data
-char out_buffer[BUFFER_SIZE]; // and for the outgoing data
-int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-/* 
-Then some cryptic incantations to bind the socket to a port and put it in 
-listen mode.
-*/
+void process_request(char * in, size_t in_len, char * out);
 
-struct sockaddr_in conn_addr; // This will hold the incoming address, note that
-                              // I don't actually use it for anything.
-socklen_t conn_addr_len = sizeof(conn_addr);
-size_r request_len;
-size_t response_len;
-for(;;)
+void run()
 {
-    int conn_fd = accept(sock_fd, (struct sockaddr *)&conn_addr, &conn_addr_len);
-    request_len = read(conn_fd, in_buffer, sizeof(buffer) * BUFFER_SIZER);
-    response_len = process_request(in_buffer, request_len, out_buffer);
-    write(con_fd, out_buffer, response_len);
-    close(con_fd);
+    char in_buffer[BUFFER_SIZE]; // A buffer for the incoming data
+    char out_buffer[BUFFER_SIZE]; // and for the outgoing data
+
+
+    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    /* 
+    Then some cryptic incantations to bind the socket to a port and put it in 
+    listen mode. Also, each call to socket(), accept(), read(), etc. should 
+    have a check that there was no error, but that would make this example very
+    verbose.
+    */
+
+    struct sockaddr_in conn_addr; // This will hold the incoming address, but
+                                  // note that I don't actually use it for 
+                                  // anything.
+    socklen_t conn_addr_len = sizeof(conn_addr);
+    size_r request_len;
+    size_t response_len;
+    for(;;)
+    {
+        int conn_fd = accept(sock_fd, (struct sockaddr *)&conn_addr, &conn_addr_len);
+        request_len = read(conn_fd, in_buffer, sizeof(buffer) * BUFFER_SIZER);
+        response_len = process_request(in_buffer, request_len, out_buffer);
+        write(con_fd, out_buffer, response_len);
+        close(con_fd);
+    }
 }
 ```
 
@@ -92,6 +102,63 @@ connection is coming from but we don't even use it. We just read and write to
 the connection like it was a regular file, using the file descriptor. First we
 read a bunch of bytes, then we process them and write the result into a buffer
 using the `process_request()` before writing that buffer back to the connection 
-and closing it. On the users side they are going to see their loading icon spin
+and closing it. On the users' side they are going to see their loading icon spin
 from the moment the connection is created, right up until the moment `close()` 
 returns, at which point the page we sent them will start rendering.
+
+It's not very realistic to expect the requests and responses to always fit in a
+fixed size buffer, so in reality the web server would probably have to do 
+several reads and writes to complete a request. I'm going to gloss over that 
+for now and assume that all requests can be serverd by reading once, writing 
+once and then closing the connection. The above implementation has a much 
+bigger problem - it's not capable of serving more than one connection at a 
+time.
+
+
+## Serving more than one connection at a time
+Serving one request at a time is not very practical. If we were serving up web
+pages then users are not going to see any results until everyone ahead of them
+gets served, it's going to look like the site is broken and they will probably 
+hit refresh, generating a new request which goes to the back of the queue. If
+the server is supporting a real time system, then the efect could be even more
+disasterous. One slow request could cause all the requests that come after it
+to be delayed - instead of missing our SLA on one request, we end up missing it
+on **every** request. Even if we can engineer `process_request()` to complete in 
+a split second, we can never garauntee that `read()` and `write()` will be 
+quick. They are transferring data over a network so they are outside of our 
+control. The simple solution to this is pretty straightforward: for each new
+connection spin up a thread to do the read/pocess/write steps. If one of the
+requests ends up being slow, it's fine, the others will be unaffected.
+
+![Using threads to serve requests](docs/threaded_http.svg)
+
+Spawning a thread in `C` is a kind of awkward, and can involve scary `(void *)`
+casts, but in `C++` it's pretty clean. You can use 
+[`std::thread`](https://en.cppreference.com/w/cpp/thread/thread) to run a 
+function that doesn't return anything, or
+[`std::async`](https://en.cppreference.com/w/cpp/thread/async) to run a 
+function and get the result packaged in an 
+[`std::future`](https://en.cppreference.com/w/cpp/thread/future). I'm not going
+to code up the simple multi threaded server, but it would look pretty similar
+to the above, only with the read/write/close part wrapped up in a function
+`void process_connection(int conn_fd)`, and the main loop would become
+
+```c++
+for(;;)
+{
+    int conn_fd = accept(sock_fd, (sockaddr *)&conn_addr, &conn_addr_len);
+    std::thread t(&proces_connection, conn_fd);
+    t.detatch();
+}
+```
+
+This will work pretty well in a lot of cases, but it has a few issues.
+First of all spawning a thread is not free and is going to introduce some 
+latency and secondly there is no upper limit on how many threads this thing
+will try to spawn at once. I'm not super worried about the latency, as Linux
+thread creation is fairly snappy, but the unbounded thread creation is scary.
+If 10,000 clients all start sending requests at the same time, we could have
+100k+ threads all vying for the same resources and that is probably not going
+to go well.
+
+![We call it, "Three Stooges Syndrome"](docs/3_stooges_syndrome.png)
