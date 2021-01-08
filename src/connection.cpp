@@ -1,3 +1,4 @@
+#include <stdexcept>
 #include <utility>
 #include <netinet/tcp.h>
 #include <cstring>
@@ -7,6 +8,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include "connection.h"
+
 
 //
 // Tell eopll to start watching for events on the specified file descriptor
@@ -145,48 +147,48 @@ void accept_connection(int sock_fd, int epoll_fd)
 
 
 //
-// This is called when we revieve an event from epoll telling
-// us that a connection is ready to recieve data.
+// This is called when we revieve an event from epoll telling us that a
+// connection is ready to recieve data.
 //
-// The response here is a bit more simplistic than in a real web
-// server, as we assume that all the data can be sent in one go,
-// which means that we have a lot less book keeping to do.
+// The response here is a bit more simplistic than in a real web server, as we
+// assume that all the data can be sent in one go, which means that we have a
+// lot less book keeping to do.
 //
-// The main simplification here is that we can just delete the connection
-// from our epoll watch as once this method finishes, we will be done with
-// that connection and don't care about it any more.
-//
-// We try and get a `std::future` with data from our pending responses,
-// extract the data from the future object, send that through the
-// connection and then close it.
+// The method is stateful and the behaviour is going to depend on the pending
+// responses. If there is no response future for the connection, then we assume
+// that the response has already been sent. We close the connection and
+// remove it from the epoll watch-list. If we do find a resoponse future, then
+// we remove it from the set of pending responses, extract its data and send
+// them to the awaiting connection.
 //
 // If the future isn't ready, then the thread is going to block while it waits
-// for the data. That would be really bad as this one thread is dealing with
-// all the incoming connections. Else where in the code, we have to be careful
-// to only add the watch for this connection *after* the data has been
-// prepared.
+// for the data. That would be really bad, as this one thread is dealing with
+// all the incoming connections. This won't be a problem thouhgh because
+// elsewhere in the code, we have been careful to only add the watch for this
+// connection *after* the response data are ready to send.
 //
-void TcpConnectionQueue::send_pending_response(int connection_fd)
+void TcpConnectionQueue::send_if_ready(int connection_fd)
 {
-    throw_on_err(epoll_delete(m_epoll_fd, connection_fd),
-                    "Remove outgoing connection from epoll");
     ResponseTable::accessor accessor;
     bool found = m_pending_responses.find(accessor, connection_fd);
     if(!found)
     {
-        throw std::runtime_error(
-                "Attemped to serve an outgoing socket, but there were "
-                "no responses available.");
+        throw_on_err(epoll_delete(m_epoll_fd, connection_fd),
+                    "Remove outgoing connection from epoll");
+        throw_on_err(close(connection_fd), "Close connection");
     }
-    if(accessor->second.valid())
+    else if(accessor->second.valid())
     {
         auto response_str = static_cast<std::string>(*(accessor->second.get()));
         m_pending_responses.erase(accessor);
         accessor.release();
         int numBytesToSend = response_str.size();
         throw_on_err(send(connection_fd, response_str.c_str(), numBytesToSend, 0), "send");
-        throw_on_err(close(connection_fd), "Close connection");
-   }
+    }
+    else
+    {
+        throw std::runtime_error("Attempted to send a response that  has already been served");
+    }
 }
 
 //
@@ -236,7 +238,7 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_conne
         }
         else if(event_type & EPOLLOUT)
         {
-            send_pending_response(event_fd);
+            send_if_ready(event_fd);
         }
         else if(event_type & EPOLLRDHUP)
         {

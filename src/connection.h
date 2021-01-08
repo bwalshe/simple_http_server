@@ -100,7 +100,7 @@ private:
     using ResponseTable = oneapi::tbb::concurrent_hash_map<int, std::future<std::shared_ptr<Response>>>;
 
     void shutdown();
-    void send_pending_response(int connection_fd);
+    void send_if_ready(int connection_fd);
     void delete_pending_response(int connection_fd);
 
     const int m_sock_fd;
