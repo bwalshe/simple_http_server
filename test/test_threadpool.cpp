@@ -4,13 +4,13 @@
 
 TEST_CASE( "Thread pool starts up and shuts down" )
 {
-    ThreadPool<10, int> pool;
+    ThreadPool<int> pool(10);
     REQUIRE(pool.shutdown());
 }
 
 TEST_CASE( "Thread pool executes a single packaged task" )
 {
-    ThreadPool<1, int> pool;
+    ThreadPool<int> pool(1);
     auto result = pool.submit([]{return 1;});
     REQUIRE(result.get() == 1);
 }
@@ -19,7 +19,7 @@ TEST_CASE( "Thread pool executes a single packaged task" )
 TEST_CASE( "Thread pool executes all tasks" )
 {
     constexpr int ntasks = 1000;
-    ThreadPool<100, int> pool;
+    ThreadPool<int> pool(100);
     std::future<int> results[ntasks];
     bool task_completed[ntasks];
     for(bool &t: task_completed) t=false;

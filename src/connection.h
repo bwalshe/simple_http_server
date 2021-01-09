@@ -110,6 +110,6 @@ private:
     const int m_max_batch_size;
     epoll_event *m_epoll_buffer;
     ResponseTable m_pending_responses;
-    ThreadPool<10, std::shared_ptr<Response>> m_thread_pool;
+    ThreadPool<std::shared_ptr<Response>> m_thread_pool;
 };
 

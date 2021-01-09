@@ -1,58 +1,50 @@
 #include <condition_variable>
 #include <future>
 #include <mutex>
+#include <vector>
 #include <thread>
 #include "concurrent_queue.h"
 #include "util.h"
 
 
-template <size_t N, class R>
+template <class R>
 class ThreadPool
 {
-    struct Worker
+    std::vector<std::thread> m_workers;
+    queue<std::packaged_task<R(void)>> m_tasks;
+    std::mutex m_wait_mtx;
+    std::condition_variable m_wait_condition;
+    std::atomic<bool> m_alive;
+
+    void run()
     {
-        int name;
-        ThreadPool *pool;
-        std::atomic<bool> alive;
-        std::thread thread;
-        void run()
+        block_signals();
+        while(m_alive)
         {
-           thread = std::thread([&]{
-                block_signals();
-                while(alive)
-                {
-                    auto current_task = pool->tasks.try_pop();
-                    if(!current_task)
-                    {
-                        std::unique_lock<std::mutex> lck(pool->wait_mtx);
-                        pool->wait_condition.wait(lck, [&]() -> bool {
-                                current_task = pool->tasks.try_pop();
-                                return static_cast<bool>(current_task) || !alive;
-                                });
-                    }
-                    if(current_task)
-                    {
-                        (*current_task)();
-                    }
-                }
-            });
+            auto current_task = m_tasks.try_pop();
+            if(!current_task)
+            {
+                std::unique_lock<std::mutex> lck(m_wait_mtx);
+                m_wait_condition.wait(lck, [&]() -> bool {
+                        current_task = m_tasks.try_pop();
+                        return static_cast<bool>(current_task) || !m_alive;
+                });
+            }
+            if(current_task)
+            {
+                (*current_task)();
+            }
         }
-    };
-
-    Worker workers[N];
-    queue<std::packaged_task<R(void)>> tasks;
-    std::mutex wait_mtx;
-    std::condition_variable wait_condition;
-
+    }
+ 
 public:
-    ThreadPool()
+    ThreadPool(size_t n_threads = std::thread::hardware_concurrency()): 
+        m_workers(n_threads),
+        m_alive(true)
     {
-        for(size_t i = 0; i < N; ++i)
+        for(auto i = 0ul; i < n_threads; ++i)
         {
-            workers[i].pool = this;
-            workers[i].name = i;
-            workers[i].alive = true;
-            workers[i].run();
+            m_workers.push_back(std::thread(&ThreadPool::run, this));
         }
     }
 
@@ -65,23 +57,20 @@ public:
     {
         std::packaged_task<R(void)> task(f);
         auto future = task.get_future();
-        tasks.push(std::move(task));
-        wait_condition.notify_one();
+        m_tasks.push(std::move(task));
+        m_wait_condition.notify_one();
         return future;
     }
 
     bool shutdown()
     {
-        for(auto &worker: workers)
+        m_alive = false;
+        m_wait_condition.notify_all();
+        for(auto &worker: m_workers)
         {
-            worker.alive = false;
-        }
-        wait_condition.notify_all();
-        for(auto &worker: workers)
-        {
-            if(worker.thread.joinable())
+            if(worker.joinable())
             {
-                worker.thread.join();
+                worker.join();
             }
         }
         return true;
