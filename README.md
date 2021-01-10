@@ -162,3 +162,64 @@ If 10,000 clients all start sending requests at the same time, we could have
 to go well.
 
 ![We call it, "Three Stooges Syndrome"](docs/3_stooges_syndrome.png)
+
+
+## Limiting the number of concurrent threads
+
+Instead of spawning a new thread for each connection as needed, we could spawn a
+fixed size set of worker threads which live for the entire lifetime of our 
+server. Each time a new connection comes in, we could pass it off to one of 
+these workers and let it do its thing. This would eliminate the pause while we
+wait for a thread to be created, and it would prevent us creating too many 
+threads at once and jamming up the system.
+
+This would introduce two new problems - how do we distribute the work between
+each of the treads fairly, and what do we do if we get a new connection while
+all the threads are busy? One of the simplest solutions is to put the connections
+on a queue and have the workers grab them when they are ready. This way, the 
+connections automatically go to whichever worker thread is not busy processing
+a request, and if there are more requests than workers, the extra connections 
+get buffered on the queue.
+ 
+If we did that our main loop would be something like this:
+
+**In our "main" thread**
+ 1. Wait for a connection 
+ 2. Put the connection on a 
+
+**On one of the "worker" threads**
+ 1. Pull an awaiting connection off the queue
+ 2. Read data from the connection
+ 3. Generate a response
+ 4. Send the data
+
+![](docs/thread_queue.svg)
+
+
+This is a pretty standard pattern in concurrent programming known as a **Thread
+Pool**. Thread pools are more general than the what is described above -
+instead of putting connections on the queue, we put generic *jobs* on there, 
+and the thread pool executes whatever is in the job instead of a specific set
+of instructions to read a connection and generate a response.
+
+If we were using a JVM language then we could just use the built in method 
+[Executors.fixedThreadPool(int n)](https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/util/concurrent/Executors.html#newFixedThreadPool(int)) 
+which will give us an 
+[ExecutorService](https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+object that we can submit jobs to. Submitting a job to a Java `ExecutorService`
+is a bit like using `std::async`, except it won't always spin up a new thread
+for you. In the case of a thread pool backed `ExecutorService` it has a finite
+number of threads that are already running, which it will submit the job to.
+
+Unfortunately, there is no thread pool implementation built in to the standard
+C++ libraries. Originally I had hoped to avoid implementing my own, and I wanted
+to use the [Intel Thread Building Blocks](https://github.com/oneapi-src/oneTBB),
+but it seems that this library was created before C++14 and they are still in 
+the process of adapting to the new standard, meaning that it doesn't behave
+well with [std::future](https://en.cppreference.com/w/cpp/thread/future) and 
+[std::packaged_task](https://en.cppreference.com/w/cpp/thread/packaged_task). 
+Futures and packaged tasks are going to become important later on when we start
+using non-blocking IO, so I decided to abandon TBB and just make my own 
+threadpool. Luckily I had seen something really similar in the last chapter of 
+[The Rust Programming Language](https://doc.rust-lang.org/book/ch20-02-multithreaded.html)
+by Klabnik and Nichols, so I knew it would be straightforward enough. 
