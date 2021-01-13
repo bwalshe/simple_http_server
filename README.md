@@ -1,4 +1,4 @@
-# A Simple(ish) HTTP Server with Asynchronous IO 
+# Building A Simple(ish) HTTP Server with Asynchronous IO from Scratch
 
 I work in a company that provides a real-time, machine learning, fraud
 detection product. The phrase *real-time* gets thrown around a lot these
@@ -109,7 +109,7 @@ returns, at which point the page we sent them will start rendering.
 It's not very realistic to expect the requests and responses to always fit in a
 fixed size buffer, so in reality the web server would probably have to do 
 several reads and writes to complete a request. I'm going to gloss over that 
-for now and assume that all requests can be serverd by reading once, writing 
+for now and assume that all requests can be served by reading once, writing 
 once and then closing the connection. The above implementation has a much 
 bigger problem - it's not capable of serving more than one connection at a 
 time.
@@ -120,14 +120,14 @@ Serving one request at a time is not very practical. If we were serving up web
 pages then users are not going to see any results until everyone ahead of them
 gets served, it's going to look like the site is broken and they will probably 
 hit refresh, generating a new request which goes to the back of the queue. If
-the server is supporting a real time system, then the efect could be even more
-disasterous. One slow request could cause all the requests that come after it
+the server is supporting a real time system, then the effect could be even more
+disastrous. One slow request could cause all the requests that come after it
 to be delayed - instead of missing our SLA on one request, we end up missing it
 on **every** request. Even if we can engineer `process_request()` to complete in 
-a split second, we can never garauntee that `read()` and `write()` will be 
+a split second, we can never guarantee that `read()` and `write()` will be 
 quick. They are transferring data over a network so they are outside of our 
 control. The simple solution to this is pretty straightforward: for each new
-connection spin up a thread to do the read/pocess/write steps. If one of the
+connection spin up a thread to do the read/process/write steps. If one of the
 requests ends up being slow, it's fine, the others will be unaffected.
 
 ![Using threads to serve requests](docs/threaded_http.svg)
@@ -223,3 +223,108 @@ using non-blocking IO, so I decided to abandon TBB and just make my own
 threadpool. Luckily I had seen something really similar in the last chapter of 
 [The Rust Programming Language](https://doc.rust-lang.org/book/ch20-02-multithreaded.html)
 by Klabnik and Nichols, so I knew it would be straightforward enough. 
+
+Let's look at the thread pool implementation in
+[thread_pool.h](https://github.com/bwalshe/simple_http_server/blob/main/src/thread_pool.h)
+The thread pool is designed to take functions (which it will execute at some 
+point in the future) and give us `std::future` objects which it will hold the
+results of executing the function.
+
+### Using the Thread Pool
+When constructing the thread pool, we have
+to say up front what the return type of the functions we will be using is, as 
+well as how many threads we want to assign to the pool.  
+The thread pool then gives us the method:
+```
+template  <class Function>
+std::future<R> ThreadPool::submit(Function &&f)
+```
+This method will accept any function and its arguments, as long as the return
+type for that function is compatible with the one we specified when creating the 
+pool. Putting the result of running `f` allows us to get this result at a later
+time, possibly in another thread. `std::future` is designed to make it safe to
+pass values between threads, with the only caveats being that you can only read
+the value once, and if you try and read it before it is ready, the call will 
+block until the value becomes available. 
+
+```c++
+// set up all the sockets, etc as in the previous example
+
+ThreadPool<void> thread_pool(10);
+
+for(;;)
+{
+    int conn_fd = accept(sock_fd, (sockaddr *)&conn_addr, &conn_addr_len);
+    thread_pool.submit([=] {process_connection(conn_fd);});
+}
+```
+The lambda we passed to `ThreadPool::sumbit` doesn't return anything so we 
+didn't use the futures this time. These will become important later on when
+we start using non-blocking IO.
+
+### Thread Pool Implementation Details
+
+The main components are `m_queue`, the queue of packaged tasks, and 
+`m_workers`, a vector of threads that pop these tasks off the queue and run 
+them. I'll explain packaged tasks a bit later, but basically they are just a
+wrapper around the functions we submit to the thread pool, which make them 
+easier to manage.
+
+The workers all run the same `ThreadPool::run()` function. This function starts
+by suppressing the `SIGINT` and `SIGQUIT` signals and then goes into a loop 
+trying to pop tasks off the  queue and execute them. Suppressing `SIGINT` and
+`SIGQUIT` isn't strictly necessary, but it will allow us to shut the thread
+pool down gracefully if the user hits *Ctrl-C* while the pool is running. Doing
+this does mean that we have to be careful to always shut down the threads in
+the pool when we are done with it, or our program will never terminate. 
+
+```C++
+while(m_alive)
+{
+    auto current_task = m_tasks.try_pop();
+    if(!current_task)
+    {
+        std::unique_lock<std::mutex> lck(m_empty_queue_mtx);
+        m_empty_queue_cv.wait(lck, [&] {
+                current_task = m_tasks.try_pop();
+                return static_cast<bool>(current_task) || !m_alive;
+        });
+    }
+    if(current_task)
+    {
+        (*current_task)();
+    }
+}
+```
+
+The loop keeps running until `m_alive` is set to false. This gives us a way of 
+shutting everything down when we are done - we set `m_alive = false` and wait 
+for all the threads to finish looping. The queue is a special concurrent queue
+that I copied almost verbatim from C++ Concurrency in action, except that it 
+uses `std::unique_ptr` to point to its elements instead of a `std::shared_ptr`.
+It won't block if it's empty and you try to pop a value from it, instead it will just
+return an empty pointer. This means that after executing `auto current_task = m_tasks.try_pop()`
+we  have to check if `current_task` is empty. If it is then we need to get the 
+thread to go to sleep until either an element is put on the queue or `m_alive`
+is set to false. 
+
+Getting the worker thread to go to sleep and wait for a value to be added to
+the queue is done using a
+[std::condition_variable](https://en.cppreference.com/w/cpp/thread/condition_variable) 
+called `m_empty_queue_cv`. The condition variable provides the method 
+`void wait( std::unique_lock<std::mutex>& lock, Predicate pred )` that puts the 
+current thread to sleep until some other thread calls `notify_one()` or `notify_all()`
+on the variable. When this happens the thread will wake up and execute `pred` and
+go back to sleep if it does not return true. Each time it is woken up, it will run
+`pred`, until eventually `pred` returns true and the thread's execution moves
+on to the next line.
+
+In our case, the wait predicate is a bit complicated and has a side effect. 
+Side effects are best avoided, but this one is fairly well contained. The wait
+predicate first tries to pop a value form `m_tasks` and assign it to 
+`current_task`. Then it checks  if either `current_task` now contains a 
+non-null value, or of `m_alive` has become false - either it's managed to pick
+up a task from the queue, or the pool has been shut down so it's time to stop 
+waiting around. Once the thread has finished waiting, we do another check to
+see if the task is non-null (we might have stopped waiting without picking up a
+task because `m_alive` is false.)

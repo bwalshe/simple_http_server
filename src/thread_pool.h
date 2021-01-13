@@ -25,7 +25,7 @@ class ThreadPool
             if(!current_task)
             {
                 std::unique_lock<std::mutex> lck(m_wait_mtx);
-                m_wait_condition.wait(lck, [&]() -> bool {
+                m_wait_condition.wait(lck, [&] {
                         current_task = m_tasks.try_pop();
                         return static_cast<bool>(current_task) || !m_alive;
                 });
@@ -53,7 +53,8 @@ public:
         shutdown();
     }
 
-    std::future<R> submit(std::function<R(void)> &&f)
+    template  <class Function>
+    std::future<R> submit(Function &&f)
     {
         std::packaged_task<R(void)> task(f);
         auto future = task.get_future();
