@@ -279,20 +279,24 @@ this does mean that we have to be careful to always shut down the threads in
 the pool when we are done with it, or our program will never terminate. 
 
 ```C++
-while(m_alive)
+void ThreadPool::run()
 {
-    auto current_task = m_tasks.try_pop();
-    if(!current_task)
+    block_signals();
+    while(m_alive)
     {
-        std::unique_lock<std::mutex> lck(m_empty_queue_mtx);
-        m_empty_queue_cv.wait(lck, [&] {
-                current_task = m_tasks.try_pop();
-                return static_cast<bool>(current_task) || !m_alive;
-        });
-    }
-    if(current_task)
-    {
-        (*current_task)();
+        auto current_task = m_tasks.try_pop();
+        if(!current_task)
+        {
+            std::unique_lock<std::mutex> lck(m_empty_queue_mtx);
+            m_empty_queue_cv.wait(lck, [&] {
+                    current_task = m_tasks.try_pop();
+                    return static_cast<bool>(current_task) || !m_alive;
+            });
+        }
+        if(current_task)
+        {
+            (*current_task)();
+        }
     }
 }
 ```
@@ -310,7 +314,7 @@ is set to false.
 
 Getting the worker thread to go to sleep and wait for a value to be added to
 the queue is done using a
-[std::condition_variable](https://en.cppreference.com/w/cpp/thread/condition_variable) 
+[`std::condition_variable`](https://en.cppreference.com/w/cpp/thread/condition_variable) 
 called `m_empty_queue_cv`. The condition variable provides the method 
 `void wait( std::unique_lock<std::mutex>& lock, Predicate pred )` that puts the 
 current thread to sleep until some other thread calls `notify_one()` or `notify_all()`
@@ -328,3 +332,38 @@ up a task from the queue, or the pool has been shut down so it's time to stop
 waiting around. Once the thread has finished waiting, we do another check to
 see if the task is non-null (we might have stopped waiting without picking up a
 task because `m_alive` is false.)
+
+Putting a task onto the queue is a bit more straightforward, the only tricky bit
+is making sure that any results produced by the task are accessible in some way.
+This is done using 
+[`std::packaged_task<T>`](https://en.cppreference.com/w/cpp/thread/packaged_task) 
+\- a class that wraps functors and 
+provides a `std::future<T>` where the return value of the functor will be 
+stored when it is eventually run. The submit function is implemented as follows.
+
+```
+template  <class Function>
+std::future<R> ThreadPool::submit(Function &&f)
+{
+    std::packaged_task<R(void)> task(f);
+    auto future = task.get_future();
+    m_tasks.push(std::move(task));
+    m_empty_queue_cv.notify_one();
+    return future;
+}
+```
+
+First we wrap the function in a task and get the future associated with the 
+task. We then move the task onto the task queue, and call `notify_one()` on the
+wait condition, in case all the workers are stuck waiting for the queue to fill.
+Finally we return the future so that whoever submitted the task has some way 
+of getting the result when it is ready.
+
+The last part of the puzzle is making sure that the worker threads all shut 
+down when we are done with the thread pool. To do this we have a `shutdown()`
+method which sets `m_alive` to  false, calls `m_empty_queue_cv.notify_all()`
+to wake up any threads that are waiting on a task, and waits for each of the 
+threads to see  `m_alive` has become false and finish what they are doing.
+For good measure, we will add a call to `shutdown()` to the `ThreadPool`
+destructor, so that it will be automatically called when the thread pool is 
+cleaned up.
