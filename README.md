@@ -367,3 +367,59 @@ threads to see  `m_alive` has become false and finish what they are doing.
 For good measure, we will add a call to `shutdown()` to the `ThreadPool`
 destructor, so that it will be automatically called when the thread pool is 
 cleaned up.
+
+## Event driven, Non-blocking IO
+
+Now we get to the interesting part. As there are a limited number of threads
+available, it is important that when each thread is active it spends its time
+doing important work and not just waiting for something to happen. Right now
+tough, this is not the case. When responding to a new request the thread 
+carries out the following steps. 
+
+    1. Read the request data from the socket and into a local buffer.
+    2. Process the request and produce a response.
+    3. Write the response data back out to the socket. 
+
+### Non-blocking IO
+
+Steps 1 and 3 involve transferring data over a network, which is an extremely
+slow operation. The worst part is that our thread isn't really doing anything 
+while this data transfer is happening. This is because our thread is collection
+of actions that take place in *userland* when it calls `read()` or `write()` it 
+is making an API call to the kernel which will perform a bunch of actions that 
+are scheduled in a different way to the thread. The standard behaviour - known
+as blocking mode - is for the thread to sit and wait for the call to 
+`read/write` to finish before carrying on. For network connections, this is 
+pretty wasteful, as a call to read will likely have to wait quite a bit of time
+for the data to be sent across the network before the kernel can copy it into
+a buffer allocated to the thread. Similarly for writes, copying the buffer out
+to the kernel is pretty quick, but it is going to take a long time for the 
+kernel to send that data out across the network. The diagram below shows what 
+that looks like for a simple HTTP request. You can see that the thread spends
+most of its time just waiting for the IO to complete, and relatively little
+time actually processing the request and producing a response.
+
+![](docs/blocking_io_session.svg)
+
+To alleviate this problem, we can tell the kernel that we want to use 
+*non-blocking* mode. When this mode is enabled, reads and writes will return
+straight away, but if we try and read or write when the socket isn't ready then
+we get an error. We could also end up closing a connection before a 
+non-blocking write has finished and end up losing the unsent data. Things 
+become more complicated, but if we had a way of timing the reads and writes so
+that we do them as soon as possible without getting an error, then we could 
+potentially deal with the requests in a much more efficient manner, as is shown
+in the figure below. The overall time taken to serve an individual request
+doesn't change, but the amount of time the thread is busy with that request is
+much shorter, so it can get on to serving a new request much more quickly.
+
+![](docs/non_blocking_io_session.svg)
+
+In addtion to timing the reads and writes correctly, we also need to make sure
+that `close` gets called on the connection once the data has finished sending.
+The worker thread can't do this itself, as it will have moved on to processing
+a new request before the data transfer has finished. In order to do this 
+correctly we need to listen for operating system events which will tell us when
+the sockets are ready for each of these actions.
+
+### Listening for OS Events
