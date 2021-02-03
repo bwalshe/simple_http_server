@@ -423,3 +423,35 @@ correctly we need to listen for operating system events which will tell us when
 the sockets are ready for each of these actions.
 
 ### Listening for OS Events
+
+Instead of guessing when the OS is going to be ready for IO events to happen, 
+we can create a watch-list and have the OS tell us when the condition we are
+waiting for is ready. This is done using 
+[`epoll`](https://man7.org/linux/man-pages/man7/epoll.7.html)
+
+When using `epoll` we create a list of file descriptors called the *intrest* 
+list, and then `epoll` gives us an efficient way of searching this list for
+file descriptors that are ready for IO actions. The epoll instance is created
+using [`epoll_create`](https://man7.org/linux/man-pages/man2/epoll_create.2.html)
+and file descriptors are added to the list using 
+[`epoll_ctl`](https://man7.org/linux/man-pages/man2/epoll_ctl.2.html). When we
+add file descriptors to the interest list, we also need to say what kind of 
+events we are interested in. The three types we will need for our web-server 
+are:
+
+* **EPOLLIN** - the file descriptor is ready to read.
+* **EPOLLOUT** - the file descriptor is ready to be written to
+* **EPOLLHUP** - the client has closed the connection
+
+When our application needs to know what events have happened, we use 
+[`epoll_wait`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html)
+a function which waits until it either receives some events or until a
+timer runs out. 
+
+Our server will constantly update the list and then wait for events, performing
+what ever IO actions are appropriate whenever it gets an event. The [man page for
+`epoll`](https://man7.org/linux/man-pages/man7/epoll.7.html) has a pretty good 
+example of its use, which you should check out.  
+
+<!-- TODO: expand a bit on epoll example from man page -->
+<!-- TODO: Graph up the main loop for the http server -->
