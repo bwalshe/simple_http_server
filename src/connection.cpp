@@ -223,9 +223,8 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_conne
         if(event_fd == m_sig_fd)
         {
             shutdown();
-            break;
         }
-        if (event_fd == m_sock_fd)
+        else if (event_fd == m_sock_fd)
         {
             accept_connection(m_sock_fd, m_epoll_fd);
         }

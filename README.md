@@ -441,7 +441,7 @@ are:
 
 * **EPOLLIN** - the file descriptor is ready to read.
 * **EPOLLOUT** - the file descriptor is ready to be written to
-* **EPOLLHUP** - the client has closed the connection
+* **EPOLLRDHUP** - the client has closed the connection
 
 When our application needs to know what events have happened, we use 
 [`epoll_wait`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html)
@@ -453,5 +453,101 @@ what ever IO actions are appropriate whenever it gets an event. The [man page fo
 `epoll`](https://man7.org/linux/man-pages/man7/epoll.7.html) has a pretty good 
 example of its use, which you should check out.  
 
-<!-- TODO: expand a bit on epoll example from man page -->
-<!-- TODO: Graph up the main loop for the http server -->
+The basic process our server uses is as follows.
+
+1. Create a file descriptor for the socket which will listen for incoming
+connections using `socket(AF_INET, SOCK_STREAM, 0)`, just like we did for the 
+single threaded server example, but now we put the FD in non-blocking mode 
+using `fcntl(fd, F_SETFL, O_NONBLOCK)`. 
+2. Add a watch for EPOLLIN events on this socket socket FD to the epoll list 
+using `epoll_ctl`.
+3. When get get an EPOLLIN on the socket then it means there is a connection
+waiting. We create a new file descriptor for the incoming connection, set it
+to non-blocking, and add an EPOLLIN watch for this FD to the epoll list. 
+4. Wait for the next event. If it is an EPOLLIN on the socket FD, then we
+go back to step 3
+5. If the event is an EPOLLIN on one of the connection FDs then that connection
+has data waiting for us. We read a request from the data and spawn a thread to 
+that will create a response to the thread and then add a watch for EPOLLOUT
+events on the connection's FD.
+6. We wait for another event. Eventually an EPOLLOUT will come for one of the 
+connections that we have produced a response for. We take the prepared response
+and send it.
+7. The next time we get an EPOLLOUT for the connection we just served, we know 
+that the data has finished sending. We close the connection and remove the FD
+from the epoll interest list.
+
+
+The event based nature of the loop means that one conductor thread can handle many 
+connections concurrently as it is just updating the epoll list and triggering
+worker threads that do the heavy lifting.
+
+One challenge is keeping track of responses we have produced but have not sent 
+out yet. This is done using a `map<int, std::future<Response>>` object which 
+maps from file descriptors (which are just `int`s) to the awaiting responses.
+The responses need to be wrapped in a `std::future` as they will be generated 
+in a worker thread, but written to the connection by the conductor thread. If 
+were to have the conductor thread access the response before the worker had 
+finished preparing it, it would cause some strange behaviour. By wrapping the
+response in a future, the worst that can happen if the conductor tries to 
+access the response too soon, is that the thread will be blocked until the
+response is ready. Of course this should never happen, as the worker  won't add 
+the corresponding EPOLLOUT watch to the epoll list until after it has finished
+producing the response. 
+
+In order to prevent a bottle neck reading and writing responses to the response
+map, we need to use a map that can safely be read and updated by multiple 
+threads at once. In Java we could use the built in 
+[ConcurrentHashMap](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ConcurrentHashMap.html),
+but unfortunately  the standard libraries in C++ do not have anything like this.
+Implementing a good concurrent map - one which would give better performance
+than just using `std::unordered_map` with a mutex to prevent concurrent access -
+is not easy, and this article is already much longer than I was planning, so I
+decided to just use an existing one. Thread Building Blocks has
+[this implementation](https://www.threadingbuildingblocks.org/docs/help/tbb_userguide/concurrent_hash_map.html)
+which looks pretty good, so I went with that. 
+
+The code which handles events for the HTTP server is contained in the 
+method [`TcpConnectionQueue::handle_connections()`](https://github.com/bwalshe/simple_http_server/blob/main/src/connection.cpp#L211)
+defined in `connection.cpp`. The full listing for that method is as follows:
+
+```C++
+std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_connections(int timeout_ms)
+{
+    std::vector<TcpConnectionQueue::connection_ptr> connections;
+
+    int nfds = throw_on_err(
+            epoll_wait(m_epoll_fd, m_epoll_buffer, m_max_batch_size, timeout_ms),
+            "epoll_wait");
+    for(auto i = 0; i < nfds; ++i)
+    {
+        int event_type = m_epoll_buffer[i].events;
+        int event_fd = m_epoll_buffer[i].data.fd;
+
+        if(event_fd == m_sig_fd)
+        {
+            shutdown();
+        }
+        else if (event_fd == m_sock_fd)
+        {
+            accept_connection(m_sock_fd, m_epoll_fd);
+        }
+        else if(event_type & EPOLLIN)
+        {
+            throw_on_err(epoll_delete(m_epoll_fd, event_fd),
+                    "Remove incoming connection from epoll");
+            connections.push_back(
+                    connection_ptr(new IncomingConnection(event_fd, this)));
+        }
+        else if(event_type & EPOLLOUT)
+        {
+            send_if_ready(event_fd);
+        }
+        else if(event_type & EPOLLRDHUP)
+        {
+            delete_pending_response(event_fd);
+        }
+    }
+    return connections;
+}
+```
