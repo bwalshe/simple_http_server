@@ -1,45 +1,74 @@
 # Building A Simple(ish) HTTP Server with Asynchronous IO from Scratch
 
-I work in a company that provides a real-time, machine learning, fraud
-detection product. The phrase *real-time* gets thrown around a lot these
-days, and I have heard it used to describe systems that produce results 
-within a second or two. For us though, it has a very specific definition -
-*real-time* means that clients will connect to our system, send a request, 
-and expect a response back on the same connection within X milliseconds. If 
-it takes any longer, then we will probably be in breach of some SLA and could
-face some kind of financial penalty.
+I work in a company that produces a real-time, machine learning, fraud
+detection product. It seems *real-time* is a bit of a hot topic in machine 
+learning at the moment and I've noticed an uptick in blog posts and Medium
+articles on the subject. Being machine learning articles, they tend to
+focus on the machine learning specific problems with real-time learning - 
+problems such as how to update your model in response to 
+incoming information and how to monitor the behaviour of the model to spot any
+potential issues. These articles tend to gloss over the more fundamental 
+requirement of a real time decisioning system - it has to produce its results
+in real time. 
+
+The phrase "real time" gets thrown around a lot, but it has a very specific meaning -
+*real-time* means that the operation has a deadline. In a real time service, 
+clients will connect to the system, send a request, and expect a response back 
+on the same connection within X milliseconds. If it takes any longer, then the 
+service operator will probably be in breach of an SLA, and could face some kind 
+of financial penalty. In the payments industry our SLAs can mean that we have 
+just milliseconds to produce a response, and that includes all the time it takes
+to get the data in and out of the system - not just the time our model spends 
+calculating a score.
 
 <img align="right" src="docs/covid_homer.jpg" alt="Christmas 2020"/>
 
 As a machine learning engineer, I don't have to deal with this problem directly.
 I mostly work on offline tools used by our data scientists to build and test
-their models. This means that I care a lot more about improving overall
-throughput instead of latency. Real time was a subject that was interesting,
-but I just didn't have the time to look into it properly. 
+their models. For tools like this, I care a lot more about improving overall
+throughput than latency. If I build anything that *does* have to work with
+our real time system, then I am given a set of constraints to follow - such as
+not accessing disk directly, not using too much CPU time - and as long as I 
+follow these constraints, someone else worries about making sure that this all 
+works. 
 
-That was until Christmas 2020. I went home to see my family and two days later
-I got a text message from the Irish Government saying that I had to remain in 
-my room for the next two weeks. I couldn't find anything good on Netflix, so
-I decided to crack open my dusty copy of 
+Until recently, when it came to real-time decisioning, I was much more 
+interested in the decisioning part than the real-time part. That was until 
+Christmas 2020. I went home to see my family and two days later I got a text 
+message from the Irish Government saying that I had to remain in  my room for 
+the next two weeks. I couldn't find anything good on Netflix, so I decided to
+crack open my dusty copy of 
 [C++ Concurrency in Action](https://www.manning.com/books/c-plus-plus-concurrency-in-action-second-edition)
 and try to get to grip with this real time stuff.
 
-The result was the HTTP server contained in the repo. On their own, HTTP 
-servers are not strictly Real Time Systems, as there is no hard limit on their
-response time. In practice though, it's usually pretty important that they 
-respond to many concurrent connections with as low a latency as possible, and
-they can be used as a *component* in a real time system. The tactic I have
-gone with to reduce the latency is to use non-blocking IO, and the bulk of 
-the this article will focus on explaining how and why this is done.
+I've always been interested in how HTTP servers such as Nginx and Node work.
+HTTP servers are not strictly Real Time Systems, as there is no hard limit on 
+their response time, but they are often vital components in an RTS.
+In general, they need respond to many concurrent connections with as low a latency 
+as possible. Even if there is no SLA in place, people have come to expect that 
+web servers should produce results in a timely manner.
+
+Both Nginx and Node use non-blocking IO to achieve their levels of performance.
+In this repo I have attempted to develop a non-blocking web-server of my own, using
+as few libraries as possible. Ideally I would have liked to have done this using
+just the C POSIX Library and the standard C++ headers, as my goal was to make sure
+that I understood the process fully. In the end I did use someone else's unit testing
+framework and a concurrent map implementation, but other than that everything is 
+implemented from scratch. I had intended for this article to become a how-to, 
+something that gentl guided the reader through the implementation. Unofrtuneately
+there is a lot to get through and not all of it is intersting. Instead this has
+become more of a stream-of-conciousness description of the things I learned 
+while implementing the server. There are a few jumps, but I hope the individual 
+sections make sense.
 
 Before we go on, I should re-iterate that I do not work on real-time stuff
-professionally. I am not suggesting that this is the best way of solving the
-problem, and you should not use this as a reference on how to use non-blocking 
-IO. On top of this I have had no involvement in the development of the real-time 
-component of Featurespace's products, I have never even looked at that part of 
-our codebase and this repo is probably not representative of how any of our 
-product work. This code has not been through a review, I rarely use C++, and it
-is the first time I have written a threaded C++ program - so *caveat emptor*.
+professionally. I am not suggesting that this is a great implementation, and
+you should not use this as a reference on how to use non-blocking 
+IO. On top of this, I have had no involvement in the development of the real-time 
+component of Featurespace's products, and so this is not representative of how 
+any of that works. This code has not been through a review, I rarely use C++, 
+and it is the first time I have written a threaded C++ program - so *caveat
+emptor*.
 
 ## Implementing the most basic web server I can think of
 
@@ -98,37 +127,54 @@ to get an idea of how it works.
 All the action happens in that infinite `for` loop. First of all we wait for a 
 connection using the `accept()` function. This returns a file descriptor and 
 writes an address into the `conn_addr` variable. The address tells us where the
-connection is coming from but we don't even use it. We just read and write to 
-the connection like it was a regular file, using the file descriptor. First we
-read a bunch of bytes, then we process them and write the result into a buffer
-using the `process_request()` before writing that buffer back to the connection 
-and closing it. On the users' side they are going to see their loading icon spin
-from the moment the connection is created, right up until the moment `close()` 
-returns, at which point the page we sent them will start rendering.
+connection is coming from but we don't really use this - all we care about is 
+the file descriptor. Which lets us write to the connection just like it was a
+regular file.
 
-It's not very realistic to expect the requests and responses to always fit in a
+The similarity of writing to a file and a connection seems a bit strange at 
+first, but it makes more sense when you understand how IO is organised in Linux.
+IO actions, such as reading and writing, are carried out by the kernel which
+has low-level access to all the hardware in the system. Our code lives in a more
+restricted area known as userland. The methods `read()` and `write()` are API calls 
+that allow our userland code to communicate with the kernel, telling it where we want it
+to send data. This means that the userland code doesn't really know anything about 
+files, sockets or connections, all it knows is that it can tell the kernel to send
+and receive data - the same API is used regardless of where the data is being sent.
+
+To process a request, first the kernel will read a bunch of bytes from the 
+connection and put them in a buffer where the userland code can access it. In
+userland, we process the data in the buffer and write the result into another
+buffer using the `process_request()`, and then get the kernel to writing that 
+buffer back to the connection. When we are done, we close the connection which 
+signals to the client that no more data is coming. On the users' side they are 
+going to see their loading icon spin from the moment the connection is created,
+right up until the moment `close()` returns.
+
+This implementation has quite a few shortcomings. It's not very realistic to 
+expect the requests and responses to always fit in a
 fixed size buffer, so in reality the web server would probably have to do 
-several reads and writes to complete a request. I'm going to gloss over that 
-for now and assume that all requests can be served by reading once, writing 
-once and then closing the connection. The above implementation has a much 
-bigger problem - it's not capable of serving more than one connection at a 
-time.
+several reads and writes to the connection to complete a request. I'm going to 
+gloss over that and assume that all requests can be served by reading once, 
+writing once and then closing the connection. Another problem is that it's not
+capable of serving more than one connection at a time, but this is something 
+we can fix pretty easily.
 
 
 ## Serving more than one connection at a time
 Serving one request at a time is not very practical. If we were serving up web
-pages then users are not going to see any results until everyone ahead of them
-gets served, it's going to look like the site is broken and they will probably 
-hit refresh, generating a new request which goes to the back of the queue. If
-the server is supporting a real time system, then the effect could be even more
-disastrous. One slow request could cause all the requests that come after it
-to be delayed - instead of missing our SLA on one request, we end up missing it
-on **every** request. Even if we can engineer `process_request()` to complete in 
-a split second, we can never guarantee that `read()` and `write()` will be 
-quick. They are transferring data over a network so they are outside of our 
-control. The simple solution to this is pretty straightforward: for each new
-connection spin up a thread to do the read/process/write steps. If one of the
-requests ends up being slow, it's fine, the others will be unaffected.
+pages, then our users would not see any results until everyone ahead of them
+gets served. To each of the individual users it would look like the site was 
+broken and they would probably hit refresh, generating a new request which 
+makes things even worse. If the server was supporting a real time system, then 
+the effect would be even more disastrous. One slow request could cause all the
+requests that come after it to be delayed - instead of missing our SLA on one 
+request, we would end up missing it on **every** request. Even if we can engineer 
+`process_request()` to complete in a split second, we can never guarantee that
+`read()` and `write()` will be quick, as they are transferring data over a network
+so they are outside of our control. The simple solution to this is pretty 
+straightforward: for each new connection spin up a thread to do the 
+read/process/write steps. If one of the requests ends up being slow, it's fine,
+the others will be unaffected.
 
 ![Using threads to serve requests](docs/threaded_http.svg)
 
@@ -139,9 +185,9 @@ function that doesn't return anything, or
 [`std::async`](https://en.cppreference.com/w/cpp/thread/async) to run a 
 function and get the result packaged in an 
 [`std::future`](https://en.cppreference.com/w/cpp/thread/future). I'm not going
-to code up the simple multi threaded server, but it would look pretty similar
-to the above, only with the read/write/close part wrapped up in a function
-`void process_connection(int conn_fd)`, and the main loop would become
+to code up the simple multi threaded server in this section, but it would look 
+pretty similar to the one above, only with the read/write/close part wrapped up 
+in a function `void process_connection(int conn_fd)`, and the main loop would become
 
 ```c++
 for(;;)
@@ -152,13 +198,13 @@ for(;;)
 }
 ```
 
-This will work pretty well in a lot of cases, but it has a few issues.
-First of all spawning a thread is not free and is going to introduce some 
-latency and secondly there is no upper limit on how many threads this thing
+This will work pretty well in a lot of cases, but it still has a few issues.
+First of all, spawning a thread is not free and is going to introduce some 
+latency. Secondly there is no upper limit on how many threads this thing
 will try to spawn at once. I'm not super worried about the latency, as Linux
 thread creation is fairly snappy, but the unbounded thread creation is scary.
 If 10,000 clients all start sending requests at the same time, we could have
-100k+ threads all vying for the same resources and that is probably not going
+100k+ threads all vying for the same resources, and that is probably not going
 to go well.
 
 ![We call it, "Three Stooges Syndrome"](docs/3_stooges_syndrome.png)
@@ -167,11 +213,11 @@ to go well.
 ## Limiting the number of concurrent threads
 
 Instead of spawning a new thread for each connection as needed, we could spawn a
-fixed size set of worker threads which live for the entire lifetime of our 
-server. Each time a new connection comes in, we could pass it off to one of 
-these workers and let it do its thing. This would eliminate the pause while we
-wait for a thread to be created, and it would prevent us creating too many 
-threads at once and jamming up the system.
+fixed number of worker threads which live for the entire lifetime of our 
+server. Each time a new connection comes in, we could pass it to one of 
+these workers and let it read from the connection and send a response. This 
+would eliminate the pause while we wait for a thread to be created, and it would 
+prevent us creating too many threads at once and jamming up the system.
 
 This would introduce two new problems - how do we distribute the work between
 each of the treads fairly, and what do we do if we get a new connection while
@@ -185,7 +231,7 @@ If we did that our main loop would be something like this:
 
 **In our "main" thread**
  1. Wait for a connection 
- 2. Put the connection on a 
+ 2. Put the connection on a queue 
 
 **On one of the "worker" threads**
  1. Pull an awaiting connection off the queue
@@ -197,10 +243,9 @@ If we did that our main loop would be something like this:
 
 
 This is a pretty standard pattern in concurrent programming known as a **Thread
-Pool**. Thread pools are more general than the what is described above -
-instead of putting connections on the queue, we put generic *jobs* on there, 
-and the thread pool executes whatever is in the job instead of a specific set
-of instructions to read a connection and generate a response.
+Pool**. Thread pools are more general of course - instead of putting connections
+on the queue, we put generic *jobs* on there, and the thread pool executes 
+whatever is in the job instead of reading a connection and generating a response.
 
 If we were using a JVM language then we could just use the built in method 
 [Executors.fixedThreadPool(int n)](https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/util/concurrent/Executors.html#newFixedThreadPool(int)) 
@@ -209,17 +254,18 @@ which will give us an
 object that we can submit jobs to. Submitting a job to a Java `ExecutorService`
 is a bit like using `std::async`, except it won't always spin up a new thread
 for you. In the case of a thread pool backed `ExecutorService` it has a finite
-number of threads that are already running, which it will submit the job to.
+number of threads that are already running, and it will use these to execute the
+job..
 
 Unfortunately, there is no thread pool implementation built in to the standard
-C++ libraries. Originally I had hoped to avoid implementing my own, and I wanted
-to use the [Intel Thread Building Blocks](https://github.com/oneapi-src/oneTBB),
+C++ libraries. I thought about using the 
+ [Intel Thread Building Blocks](https://github.com/oneapi-src/oneTBB),
 but it seems that this library was created before C++14 and they are still in 
 the process of adapting to the new standard, meaning that it doesn't behave
 well with [std::future](https://en.cppreference.com/w/cpp/thread/future) and 
 [std::packaged_task](https://en.cppreference.com/w/cpp/thread/packaged_task). 
-Futures and packaged tasks are going to become important later on when we start
-using non-blocking IO, so I decided to abandon TBB and just make my own 
+Futures and packaged tasks are going to become important in a later section when
+we get to non-blocking IO, so I decided to abandon TBB and just make my own 
 threadpool. Luckily I had seen something really similar in the last chapter of 
 [The Rust Programming Language](https://doc.rust-lang.org/book/ch20-02-multithreaded.html)
 by Klabnik and Nichols, so I knew it would be straightforward enough. 
@@ -551,3 +597,4 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_conne
     return connections;
 }
 ```
+
