@@ -212,7 +212,7 @@ to go well.
 
 ## Limiting the number of concurrent threads
 
-Instead of spawning a new thread for each connection as needed, we could spawn a
+Instead of spawning a new thread for each connection as needed, we could instead spawn a
 fixed number of worker threads which live for the entire lifetime of our 
 server. Each time a new connection comes in, we could pass it to one of 
 these workers and let it read from the connection and send a response. This 
@@ -243,7 +243,7 @@ If we did that our main loop would be something like this:
 
 
 This is a pretty standard pattern in concurrent programming known as a **Thread
-Pool**. Thread pools are more general of course - instead of putting connections
+Pool**. Thread pools are more general purpose than this of course - instead of putting connections
 on the queue, we put generic *jobs* on there, and the thread pool executes 
 whatever is in the job instead of reading a connection and generating a response.
 
@@ -277,10 +277,9 @@ point in the future) and give us `std::future` objects which it will hold the
 results of executing the function.
 
 ### Using the Thread Pool
-When constructing the thread pool, we have
-to say up front what the return type of the functions we will be using is, as 
-well as how many threads we want to assign to the pool.  
-The thread pool then gives us the method:
+When constructing the thread pool, we have to say up front what the return type
+of the functions we will be using is, as well as how many threads we want to 
+assign to the pool. The thread pool then gives us the method:
 ```
 template  <class Function>
 std::future<R> ThreadPool::submit(Function &&f)
@@ -431,12 +430,13 @@ carries out the following steps.
 Steps 1 and 3 involve transferring data over a network, which is an extremely
 slow operation. The worst part is that our thread isn't really doing anything 
 while this data transfer is happening. This is because our thread is collection
-of actions that take place in *userland* when it calls `read()` or `write()` it 
-is making an API call to the kernel which will perform a bunch of actions that 
-are scheduled in a different way to the thread. The standard behaviour - known
-as blocking mode - is for the thread to sit and wait for the call to 
+of actions that take place in *userland*, and when it calls `read()` or `write()` 
+it is making an API call to the kernel which will perform actions that 
+are scheduled in a different way to the operations that are part of the thread. 
+The standard behaviour for IO actions - which is known as blocking mode - is 
+for the thread to sit and wait for the call to 
 `read/write` to finish before carrying on. For network connections, this is 
-pretty wasteful, as a call to read will likely have to wait quite a bit of time
+pretty wasteful, as a call to `read()` will likely have to wait quite a bit of time
 for the data to be sent across the network before the kernel can copy it into
 a buffer allocated to the thread. Similarly for writes, copying the buffer out
 to the kernel is pretty quick, but it is going to take a long time for the 
@@ -461,12 +461,12 @@ much shorter, so it can get on to serving a new request much more quickly.
 
 ![](docs/non_blocking_io_session.svg)
 
-In addtion to timing the reads and writes correctly, we also need to make sure
-that `close` gets called on the connection once the data has finished sending.
+In addition to timing the reads and writes correctly, we also need to make sure
+that `close()` is called on the connection once the data has finished sending.
 The worker thread can't do this itself, as it will have moved on to processing
-a new request before the data transfer has finished. In order to do this 
-correctly we need to listen for operating system events which will tell us when
-the sockets are ready for each of these actions.
+a new request before the data transfer has finished. In order to do all these actions 
+correctly, we need to listen for operating system events which will tell us when
+the sockets are ready for each specific action.
 
 ### Listening for OS Events
 
@@ -489,7 +489,7 @@ are:
 * **EPOLLOUT** - the file descriptor is ready to be written to
 * **EPOLLRDHUP** - the client has closed the connection
 
-When our application needs to know what events have happened, we use 
+When our application needs to know what events have occurred, we use 
 [`epoll_wait`](https://man7.org/linux/man-pages/man2/epoll_wait.2.html)
 a function which waits until it either receives some events or until a
 timer runs out. 
@@ -541,9 +541,9 @@ response is ready. Of course this should never happen, as the worker  won't add
 the corresponding EPOLLOUT watch to the epoll list until after it has finished
 producing the response. 
 
-In order to prevent a bottle neck reading and writing responses to the response
-map, we need to use a map that can safely be read and updated by multiple 
-threads at once. In Java we could use the built in 
+In order to prevent a bottle neck when reading and writing responses to the 
+response map, we need to use a map that can safely be read and updated by 
+multiple threads at once. In Java we could use the built in 
 [ConcurrentHashMap](https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ConcurrentHashMap.html),
 but unfortunately  the standard libraries in C++ do not have anything like this.
 Implementing a good concurrent map - one which would give better performance
@@ -583,7 +583,7 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_conne
             throw_on_err(epoll_delete(m_epoll_fd, event_fd),
                     "Remove incoming connection from epoll");
             connections.push_back(
-                    connection_ptr(new IncomingConnection(event_fd, this)));
+                    connection_ptr(new IncomingConnection(event_fd, this));
         }
         else if(event_type & EPOLLOUT)
         {
@@ -598,3 +598,79 @@ std::vector<TcpConnectionQueue::connection_ptr> TcpConnectionQueue::handle_conne
 }
 ```
 
+This is the heart of the web server, so it is worth going into in detail. The 
+basic idea of this method is that it waits for a maximum on N milliseconds for
+some kind of event to appear on the watch list, and then deals with it. Each
+time it is called it produces a list of new connections that have to be 
+processed, sends any data that has been prepared for the connections, and 
+closes any connections that have been fully processed. In addition to this it 
+checks to see if the user has hit `crtl-c` or `ctrl-q`, which will trigger the 
+shut down sequence. 
+
+The method fist creates a `std::vector` to hold any new connections that have 
+data that is ready to be read. Even though `handle_connections` reacts as soon 
+as the first event appears, it is possible that multiple events have occurred 
+before the method was called, so it is possible that there are multiple 
+connections waiting in the queue. It's also possible that there are zero 
+connections, but using a vector means that we don't have to worry about this.
+
+Then it calls `epoll_wait(m_epoll_fd, m_epoll_buffer, m_max_batch_size, timeout_ms)`.
+This waits at most `timeout_ms` milliseconds for an event to appear, and puts
+any awaiting events into the array `m_epoll_buffer`. There are two pieces of 
+information that we are interested in the event type (`event_type)` and the 
+event file descriptor (`event_fd`)
+
+The first thing we check is if this event comes form `m_sig_fd`, a file 
+descriptor that was set up to watch for `crtlc/ctrl-q` signals in the method
+`setup_sig_fd` in [connection.cpp](https://github.com/bwalshe/simple_http_server/blob/main/src/connection.cpp)
+We are only waiting on one event type from this fd, so there is no point in
+checking the type. If we get this signal, we shut down the thread-pool and
+exit. 
+
+Similarly, for `m_sock_fd` we are only waiting on one type of signal. When
+we get an event for this fd, it means that the socket has a new connection
+waiting to be served. The code for accepting the connection is in the 
+function `accept_connection`. This will call accept to crate a new file 
+descriptor for the connection, set the fd to non-blocking and then add a watch
+to epoll for `EPOLLIN` signals for the fd. The kernel starts trying to receive 
+data from the connection and will send an `EPOLLIN` signal as soon as it receives
+*something*. Of course that *something* might not be a full request, but I will
+address that later. On top of this, in most on-line resources you read on epoll, 
+they watch for `EPOLLIN & EPOLLET`, which is the edge-triggered version of 
+`EPOLLIN`. I am not doing that here, and this is another thing I will explain 
+later on.
+
+The next type of event that we need to deal with is `EPOLLIN`. This is the signal 
+we get when there is data waiting for us on a connection. We do two things in 
+this case. We delete the watch form the epoll list, and we create an 
+`IncomingConnection` object to wrap the connection's file descriptor. The 
+`IncomingConnection` class gives us a way of sending data back to the connection
+when we are ready. This connection gets added to the vector of connections we
+will return when the method is finished.
+
+The behaviour of the `IncomingConnection` class is a bit complicated, and could 
+do with being refactored. This class has a `respond()` method that takes care of
+first putting a job on the thread pool queue and then putting a `std::future` 
+object for the job's result onto a map of unsent responses. It also adds a watch
+for `EPOLLRDHUP` signals which will tell us if the remote client broke the 
+connection before we could response. But wait there is more... In addition to 
+adding the response job to the thread pool queue, it tacks on an instruction to
+end of that job which will create a watch for `EPOLLOUT` once that job is 
+finished. The reason it does this is so that the system won't try and send the 
+response until it is ready. Admittedly there are a lot of things going on at 
+once in the `respond()` method, and this could have been designed better.
+
+As we don't add listeners for `EPOLLOUT` events until the data is ready, this
+means that when we receive them, the course of action is pretty simple. First
+we search `m_pending_responses` to see if there is a response waiting to be 
+sent if we find something we send it, and delete the object from `m_pending_responses`.
+If we don't find anything then we assume that we must have already sent a
+response to the connection, and that the kernel has finished sending it. It's time
+to close the connection, and delete all the watches for it from our epoll list.
+
+Finally there is one last event type we need to deal with - `EPOLLRDHUP`. This 
+happens if a remote client closes the connection on us. If this happens we 
+delete the corresponding response from `m_pending_resposes`, and remove all
+our epoll watches for that connection fd. This is important as file descriptors
+get reused for new connections, and we don't want a response intended for one 
+of our old connections to be sent to a new one.
