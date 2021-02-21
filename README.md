@@ -635,10 +635,7 @@ descriptor for the connection, set the fd to non-blocking and then add a watch
 to epoll for `EPOLLIN` signals for the fd. The kernel starts trying to receive 
 data from the connection and will send an `EPOLLIN` signal as soon as it receives
 *something*. Of course that *something* might not be a full request, but I will
-address that later. On top of this, in most on-line resources you read on epoll, 
-they watch for `EPOLLIN & EPOLLET`, which is the edge-triggered version of 
-`EPOLLIN`. I am not doing that here, and this is another thing I will explain 
-later on.
+address that later. 
 
 The next type of event that we need to deal with is `EPOLLIN`. This is the signal 
 we get when there is data waiting for us on a connection. We do two things in 
@@ -674,3 +671,66 @@ delete the corresponding response from `m_pending_resposes`, and remove all
 our epoll watches for that connection fd. This is important as file descriptors
 get reused for new connections, and we don't want a response intended for one 
 of our old connections to be sent to a new one.
+
+
+# Some limitations of this implementation
+This implementation was something I put together in a few days to get a better 
+understanding of non-blocking IO and responding to events in real time. As such,
+it has quite a few rough edges. Most of these, I just don't care about - I 
+could fix them, but then I would be moving away from the subject that I was 
+trying to learn about. There is however one galling issue that I want to 
+discuss.
+
+Throughout this project I have made the assumption that each connection would 
+consist of a single request and a single response, and that both the request and
+the response would be sent using a single call to `read()` or `write()` each.
+Real HTTP traffic is more complicated than this, as it is possible for both the
+client and the server to stream their data, meaning that multiple request and/or
+response messages are needed. 
+
+Even if we forget about streaming and assume the client and server are going to
+each only send a single message. It is possible that a single call to 
+`read/write` might not be enough to get the data. The messages used in 
+developing this server are small, and I have only tested it over the local 
+network, but if the messages were larger and the network was slower, it is 
+possible that a request might not have finished sending by the time we come
+to read it. 
+
+In the case of event driven IO, when we first create a file descriptor for an
+incoming connection, we also set a watch for an `EPOLLIN` event on that file
+descriptor. The `EPOLLIN` event is sent *as soon* as there is data waiting 
+on the FD, but it makes no promises about how much data is there. It is 
+possible that only a few bytes had arrived by the time we get the epoll event 
+and start trying to read.
+
+On top of this, the current implementation actually reads and parses the 
+request in the conductor thread, instead of using one of the threads form the
+thread pool. A more realistic implementation would incrementally read from the
+connection into a buffer until it either has a full request or generates an 
+error. Then it could use a thread on the pool to parse that request and generate
+the response. When the response was ready, that would also need to be 
+incrementally written to the connection until it was all gone. I don't think 
+this would be fundamentally different to the current implementation, but it
+would require quite a bit more book-keeping.
+
+
+# Summary
+
+In this document I demonstrated a few different things that need to work 
+together in order to have a web server that can respond efficiently to events
+in real time. The first thing is performing IO across the network. This uses 
+the sockets interface to manage the connections, and writing to the connections
+uses the same interface as writing to a file. The next part of the puzzle is 
+being able to handle multiple connections at once. This is done using threads,
+and in order to eliminate the delay associated with creating new threads and to 
+prevent too many threads from being created at once, a thread pool can be used
+to pass jobs to a set of threads of fixed size that are created at start-up.
+The low-level IO operations are handled by the kernel, which is separate to the
+threads, which are part of *userspace*. This means that the threads are 
+effectively idle during IO operations while they wait for the kernel to finish
+sending/receiving data. By setting IO into non-blocking mode, we can tell the
+threads to stop waiting around for IO to finish and go do something else. If we
+do this, then it needs to be carefully controlled or errors will occur. Using 
+`epoll` allows us to monitor what is going on in the kernel, and have it send
+events when our connections are ready for each of the IO operations that we 
+want to perform.
