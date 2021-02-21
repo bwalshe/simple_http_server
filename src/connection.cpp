@@ -265,7 +265,7 @@ void TcpConnectionQueue::IncomingConnection::respond(std::function<std::shared_p
         if(m_queue->m_pending_responses.insert(accessor, m_request_fd)) {
             accessor->second = m_queue->m_thread_pool.submit([=](){
                 auto r = response();
-                throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLOUT, true),
+                throw_on_err(epoll_watch(m_queue->m_epoll_fd, m_request_fd, EPOLLOUT | EPOLLRDHUP, true),
                     "Add outgoing response to epoll");
                 return r;
             });

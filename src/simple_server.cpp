@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iterator>
 #include "connection.h"
 #include "request.h"
 #include "response.h"
@@ -94,6 +95,7 @@ int main(int argc, char **argv)
         ->with_error_response([]{return ServerError(ERROR);})
         ->build();
 
+    std::cerr << "Server running on port " << port << std::endl;
     while(conns.is_alive())
     {
        for(TcpConnectionQueue::connection_ptr connection: conns.handle_connections(timeout))
